@@ -1,4 +1,4 @@
-"""The system that manages the beliefs of the AI."""
+"""管理 AI 信念的系统。"""
 
 from llm import MistralLLM
 
@@ -47,7 +47,7 @@ Memory:
 Belief: """
 
 class BeliefSystem:
-	"""The system that manages the AI's beliefs"""
+	"""管理 AI 信念的系统。"""
 	model = MistralLLM("mistral-medium-latest")
 	max_beliefs = 12
 
@@ -56,7 +56,7 @@ class BeliefSystem:
 		self.beliefs = []
 
 	def get_beliefs(self):
-		"""Returns a list of the AI's current beliefs"""
+		"""返回 AI 当前信念列表。"""
 		return [belief["content"] for belief in self.beliefs]
 
 	def _generate_belief(self, memory, importance):
@@ -100,12 +100,12 @@ class BeliefSystem:
 			
 		self.beliefs.append(belief)
 		self.beliefs.sort(key=lambda b: b["importance"], reverse=True)
-		if len(self.beliefs) > self.max_beliefs:  # Keep most important beliefs
+		if len(self.beliefs) > self.max_beliefs:  # 仅保留最重要的信念。
 			self.beliefs = self.beliefs[:self.max_beliefs]
 		return True
 
 	def generate_new_belief(self, memory, importance):
-		"""Generates a new belief given a memory."""
+		"""根据记忆生成新的信念。"""
 		try:
 			belief = self._generate_belief(memory, importance)
 		except Exception as e:
@@ -115,13 +115,13 @@ class BeliefSystem:
 
 	def _tick(self, dt):
 		for belief in self.beliefs:
-			# Important memories decay slower
+			# 重要记忆对应的信念衰减会更慢。
 			half_life = 20 * 86400 * (1 + belief["importance"]**2 * 3)
 			decay_factor = 0.5 ** (dt / half_life)
 			belief["importance"] *= decay_factor
 
 	def tick(self, delta):
-		"""Ticks the belief system"""
+		"""推进信念系统状态。"""
 		subtick = max(1, min(delta / 10, 10000))
 		while delta > 0:
 			subt = min(delta, subtick)

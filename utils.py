@@ -7,7 +7,25 @@ from datetime import datetime
 
 import requests
 
-from colored import Style
+from safe_colored import Style
+
+
+def format_date(dt):
+	"""以跨平台方式格式化日期。"""
+	return f"{dt.strftime('%a')}, {dt.month}/{dt.day}/{dt.year}"
+
+
+def format_time(dt):
+	"""以跨平台方式格式化时间。"""
+	hour = dt.hour % 12
+	if hour == 0:
+		hour = 12
+	return f"{hour}:{dt.strftime('%M %p')}"
+
+
+def format_timestamp(dt):
+	"""以跨平台方式格式化完整时间戳。"""
+	return f"{format_date(dt)}, {format_time(dt)}"
 
 def clear_screen():
 	"""Clears the screen."""

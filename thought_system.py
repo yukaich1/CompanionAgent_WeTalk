@@ -7,11 +7,13 @@ from datetime import datetime
 from llm import MistralLLM, FallbackMistralLLM
 from const import *
 from utils import (
+	format_date,
 	format_memories_to_string,
+	format_time,
 	time_since_last_message_string
 )
 from emotion_system import Emotion
-from colored import Fore, Style
+from safe_colored import Fore, Style
 
 
 class ThoughtSystem:
@@ -35,7 +37,7 @@ class ThoughtSystem:
 		self.last_reflection = datetime.now()
 	
 	def can_reflect(self):
-		"""Determines whether the AI should reflect on its memories and gain insights."""
+		"""判断 AI 是否该对记忆进行反思并获得洞察。"""
 		return (
 			self.memory_system.importance_counter >= 10
 			and (datetime.now() - self.last_reflection).total_seconds() > 6 * 3600
@@ -43,7 +45,7 @@ class ThoughtSystem:
 		)
 		
 	def reflect(self):
-		"""Performs 'reflection' - the AI can reflect on its memories to gain higher-level insights."""	
+		"""执行“反思”，让 AI 从记忆中提炼更高层次的洞察。"""
 		recent_memories = self.memory_system.get_short_term_memories()
 		memories_str = "\n".join(mem.format_memory() for mem in recent_memories)
 
@@ -54,7 +56,7 @@ class ThoughtSystem:
 			{"role":"system", "content":self.config.system_prompt},
 			{"role":"user", "content":prompt}
 		]
-		print("Reflecting on memories...")
+		print("正在对记忆进行反思...")
 		questions = self.model.generate(
 			messages,
 			temperature=0.1,
@@ -62,7 +64,7 @@ class ThoughtSystem:
 		)["questions"]
 
 		for question in questions:
-			print(f"Reflecting on '{question}'")
+			print(f"正在反思：'{question}'")
 			relevant_memories = (
 				self.memory_system.get_short_term_memories()
 				+ self.memory_system.retrieve_long_term(question, 12)
@@ -81,7 +83,7 @@ class ThoughtSystem:
 				temperature=0.1,
 				return_json=True
 			)["insights"]
-			print("Insights gained:")
+			print("获得洞察：")
 			for insight in insights:
 				self.memory_system.remember(f"I gained an insight after reflection: {insight}", is_insight=True)
 				print("- " + insight)
@@ -111,8 +113,8 @@ class ThoughtSystem:
 		data.setdefault("relationship_change", {"friendliness": 0.0, "dominance": 0.0})
 		return data
 
-	def think(self, messages, memories, recalled_memories, last_message):
-		"""Generates the AI's internal thoughts and emotions"""
+	def think(self, messages, memories, recalled_memories, last_message, persona_context=""):
+		"""生成 AI 的内部思考与情绪。"""
 		memories_str = format_memories_to_string(
 			memories,
 			"You don't have any memories of this user yet!"
@@ -120,7 +122,7 @@ class ThoughtSystem:
 		
 		memory_emotion = Emotion()
 		if recalled_memories:
-			# Add emotion influence from recalled memories
+			# 将被回想记忆里的情绪影响叠加进当前情绪。
 			total_weight = 0.0
 			for memory in recalled_memories:
 				weight = memory.get_recency_factor(True)
@@ -163,9 +165,10 @@ class ThoughtSystem:
 			name=self.config.name,
 			user_input=text_content,
 			personality_summary=self.personality_system.get_summary(),
+			persona_context=persona_context or "None",
 			mood_long_desc=self.emotion_system.get_mood_long_description(),
-			curr_date=datetime.now().strftime("%a, %-m/%-d/%Y"),
-			curr_time=datetime.now().strftime("%-I:%M %p"),
+			curr_date=format_date(datetime.now()),
+			curr_time=format_time(datetime.now()),
 			mood_prompt=self.emotion_system.get_mood_prompt(),
 			memories=memories_str,
 			relationship_str=self.relation_system.get_string(),
@@ -207,7 +210,7 @@ class ThoughtSystem:
 		})
 
 		if self.show_thoughts:
-			print("Thinking:")
+			print("思考中：")
 			for thought in data["thoughts"]:
 				print(Fore.magenta + thought['content'] + Style.reset)
 
@@ -215,7 +218,7 @@ class ThoughtSystem:
 	
 		num_steps = 0
 		
-		# Let it continue thinking if necessary
+		# 如果有必要，让它继续深入思考。
 		while data["next_action"].lower() == "continue_thinking":
 			num_steps += 1
 			added_context = ""
@@ -258,7 +261,6 @@ class ThoughtSystem:
 				data["emotion_mult"][key] = max(0.5, min(1.5, data["emotion_mult"][key]))
 			else:
 				del data["emotion_mult"][key]
-		print(data["emotion_mult"])
 		if not appraisal and data["emotion"] != "Neutral":
 			appraisal = [(data["emotion"], data["emotion_intensity"]/10)]
 		
@@ -267,7 +269,7 @@ class ThoughtSystem:
 		for emotion, intensity in appraisal:
 			intensity *= data["emotion_mult"].get(emotion, 1.0)
 			if self.show_thoughts:
-				print(f"{emotion}: {intensity}")
+				print(f"{emotion}：{intensity}")
 			total_emotion += self.emotion_system.experience_emotion(emotion, intensity)
 		
 		self.emotion_system.clamp_mood()

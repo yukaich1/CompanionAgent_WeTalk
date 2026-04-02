@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wetalk</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="aurora"></div>
+  <div class="noise"></div>
+
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand-card glass">
+        <div class="eyebrow">Wetalk</div>
+        <h1>你的Virtual聊天好友</h1>
+        <p>そう、私です。</p>
+      </div>
+
+      <div class="status-card glass">
+        <div class="status-head">
+          <span>角色状态</span>
+          <button id="open-settings" class="ghost-button" type="button">配置</button>
+        </div>
+        <div class="agent-row">
+          <img id="agent-avatar" class="avatar large" alt="avatar">
+          <div>
+            <div id="agent-name" class="agent-name">伊蕾娜</div>
+            <div class="agent-meta"><span class="dot"></span>在线</div>
+          </div>
+        </div>
+        <div class="metric-row">
+          <div>
+            <div class="metric-label">心情</div>
+            <div id="agent-mood" class="metric-value">平静</div>
+          </div>
+          <div>
+            <div class="metric-label">好感</div>
+            <div id="agent-affinity" class="metric-value">♡</div>
+          </div>
+        </div>
+        <div class="metric-label">人设关键词</div>
+        <div id="keyword-list" class="tag-list"></div>
+      </div>
+
+      <div class="activity-card glass">
+        <div class="status-head">
+          <span>最近活动</span>
+          <span id="persona-count" class="inline-meta">0 条人设</span>
+        </div>
+        <div id="activity-list" class="activity-list"></div>
+      </div>
+    </aside>
+
+    <main class="chat-panel glass">
+      <header class="chat-header">
+        <div>
+          <div class="eyebrow">Conversation</div>
+          <h2 id="chat-title">Wetalk 对话</h2>
+        </div>
+        <div id="typing-status" class="typing-status">已连接</div>
+      </header>
+
+      <section id="messages" class="messages"></section>
+
+      <footer class="composer glass-inner">
+        <textarea id="message-input" placeholder="输入你想说的话…" rows="3"></textarea>
+        <button id="send-button" class="primary-button" type="button">发送</button>
+      </footer>
+    </main>
+  </div>
+
+  <div id="settings-drawer" class="drawer hidden">
+    <div class="drawer-backdrop"></div>
+    <div class="drawer-panel glass">
+      <div class="drawer-header">
+        <div>
+          <div class="eyebrow">Settings</div>
+          <h3>角色配置</h3>
+        </div>
+        <button id="close-settings" class="ghost-button" type="button">关闭</button>
+      </div>
+
+      <section class="drawer-section">
+        <label class="field-label" for="name-input">角色名称</label>
+        <div class="inline-form">
+          <input id="name-input" type="text" placeholder="输入角色名称">
+          <button id="save-name" class="secondary-button" type="button">保存</button>
+        </div>
+      </section>
+
+      <section class="drawer-section">
+        <div class="field-label">头像</div>
+        <div class="inline-form">
+          <input id="avatar-input" type="file" accept=".png,.jpg,.jpeg,.webp">
+          <button id="upload-avatar" class="secondary-button" type="button">上传头像</button>
+        </div>
+      </section>
+
+      <section class="drawer-section">
+        <div class="field-label">角色学习</div>
+        <div class="inline-form">
+          <input id="persona-file" type="file" accept=".txt,.md,.log,.json,.csv">
+          <button id="upload-persona-file" class="secondary-button" type="button">上传文件</button>
+        </div>
+        <input id="persona-label" type="text" placeholder="资料标题，例如：伊蕾娜设定集">
+        <textarea id="persona-text" rows="7" placeholder="直接粘贴设定、对白、人物分析或小说片段…"></textarea>
+        <button id="learn-persona-text" class="secondary-button full" type="button">生成待确认预览</button>
+
+        <div id="preview-panel" class="preview-panel hidden">
+          <div class="preview-head">
+            <strong id="preview-title">待确认的人设预览</strong>
+            <button id="confirm-preview" class="secondary-button" type="button">确认写入</button>
+          </div>
+          <div id="preview-keywords" class="tag-list"></div>
+          <div id="preview-snippets" class="preview-snippets"></div>
+        </div>
+      </section>
+
+      <section class="drawer-section danger-zone">
+        <button id="clear-persona" class="danger-button" type="button">清空人设</button>
+        <button id="reset-all" class="danger-button ghost-danger" type="button">删除全部存档</button>
+      </section>
+    </div>
+  </div>
+
+  <div id="avatar-editor" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-panel glass">
+      <div class="drawer-header">
+        <div>
+          <div class="eyebrow">Avatar Editor</div>
+          <h3>调整头像区域</h3>
+        </div>
+        <button id="close-avatar-editor" class="ghost-button" type="button">关闭</button>
+      </div>
+
+      <div class="avatar-editor-body">
+        <div class="avatar-canvas-shell">
+          <canvas id="avatar-canvas" width="420" height="420"></canvas>
+        </div>
+
+        <div class="avatar-editor-controls">
+          <div class="field-label">拖拽图片调整位置</div>
+          <div class="slider-row">
+            <span>缩放</span>
+            <input id="avatar-scale" type="range" min="1" max="4" step="0.01" value="1">
+          </div>
+          <div class="avatar-editor-actions">
+            <button id="reselect-avatar" class="secondary-button" type="button">重新选择</button>
+            <button id="save-avatar-crop" class="primary-button" type="button">保存头像</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
