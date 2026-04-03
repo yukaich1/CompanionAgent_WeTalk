@@ -1,4 +1,4 @@
-#pylint:disable=C0115
+﻿#pylint:disable=C0115
 #pylint:disable=C0114
 import json
 import time
@@ -12,7 +12,7 @@ from utils import (
 	format_time,
 	time_since_last_message_string
 )
-from emotion_system import Emotion
+from reasoning.emotion_state_machine import Emotion
 from safe_colored import Fore, Style
 
 
@@ -37,7 +37,6 @@ class ThoughtSystem:
 		self.last_reflection = datetime.now()
 	
 	def can_reflect(self):
-		"""判断 AI 是否该对记忆进行反思并获得洞察。"""
 		return (
 			self.memory_system.importance_counter >= 10
 			and (datetime.now() - self.last_reflection).total_seconds() > 6 * 3600
@@ -45,7 +44,6 @@ class ThoughtSystem:
 		)
 		
 	def reflect(self):
-		"""执行“反思”，让 AI 从记忆中提炼更高层次的洞察。"""
 		recent_memories = self.memory_system.get_short_term_memories()
 		memories_str = "\n".join(mem.format_memory() for mem in recent_memories)
 
@@ -94,6 +92,7 @@ class ThoughtSystem:
 		data = data.copy()
 	
 		data.setdefault("possible_user_emotions", [])
+		data.setdefault("emotion_mult", {})
 	
 		data.setdefault("emotion_intensity", 5)
 		data["emotion_intensity"] = max(1, min(10, int(data["emotion_intensity"])))
@@ -114,7 +113,6 @@ class ThoughtSystem:
 		return data
 
 	def think(self, messages, memories, recalled_memories, last_message, persona_context=""):
-		"""生成 AI 的内部思考与情绪。"""
 		memories_str = format_memories_to_string(
 			memories,
 			"You don't have any memories of this user yet!"
@@ -274,7 +272,32 @@ class ThoughtSystem:
 		
 		self.emotion_system.clamp_mood()
 		
-		data["emotion"] = appraisal_hint
+		data["appraisal_hint"] = appraisal_hint
 		data["emotion_obj"] = total_emotion
 		
 		return data
+
+
+class ThoughtSystemAdapter:
+
+	def __init__(self, legacy_thought_system):
+		self.legacy = legacy_thought_system
+
+	def think(self, assembled_context, messages, memories, recalled_memories, last_message):
+		persona_context = "\n\n".join(
+			part
+			for part in (
+				assembled_context.slots.get("immutable_core", ""),
+				assembled_context.slots.get("web_persona_context", ""),
+				assembled_context.slots.get("evidence_chunks", ""),
+			)
+			if part
+		)
+		return self.legacy.think(
+			messages=messages,
+			memories=memories,
+			recalled_memories=recalled_memories,
+			last_message=last_message,
+			persona_context=persona_context,
+		)
+

@@ -9,6 +9,8 @@ uploads/
 frontend_state.json
 ireina_save.pkl
 ireina_persona.pkl
+memory_state.json
+persona_state.json
 
 .idea/
 .vscode/

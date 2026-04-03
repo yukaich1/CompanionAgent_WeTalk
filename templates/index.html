@@ -14,7 +14,7 @@
     <aside class="sidebar">
       <div class="brand-card glass">
         <div class="eyebrow">Wetalk</div>
-        <h1>你的Virtual聊天好友</h1>
+        <h1>你的Virtual聊天伙伴</h1>
         <p>そう、私です。</p>
       </div>
 
@@ -25,17 +25,17 @@
         </div>
         <div class="agent-row">
           <img id="agent-avatar" class="avatar large" alt="avatar">
-          <div>
+          <div class="agent-copy">
             <div id="agent-name" class="agent-name">伊蕾娜</div>
             <div class="agent-meta"><span class="dot"></span>在线</div>
           </div>
         </div>
         <div class="metric-row">
-          <div>
-            <div class="metric-label">心情</div>
+          <div class="metric-card">
+            <div class="metric-label">情绪</div>
             <div id="agent-mood" class="metric-value">平静</div>
           </div>
-          <div>
+          <div class="metric-card">
             <div class="metric-label">好感</div>
             <div id="agent-affinity" class="metric-value">♡</div>
           </div>
@@ -55,11 +55,13 @@
 
     <main class="chat-panel glass">
       <header class="chat-header">
-        <div>
-          <div class="eyebrow">Conversation</div>
-          <h2 id="chat-title">Wetalk 对话</h2>
+        <div class="chat-header-main">
+          <img id="chat-agent-avatar" class="avatar header-avatar" alt="avatar">
+          <div class="chat-header-copy">
+            <div id="chat-title" class="chat-title">伊蕾娜</div>
+            <div id="typing-status" class="typing-status">已连接</div>
+          </div>
         </div>
-        <div id="typing-status" class="typing-status">已连接</div>
       </header>
 
       <section id="messages" class="messages"></section>
@@ -101,8 +103,8 @@
       <section class="drawer-section">
         <div class="field-label">角色学习</div>
         <div class="inline-form">
-          <input id="persona-file" type="file" accept=".txt,.md,.log,.json,.csv">
-          <button id="upload-persona-file" class="secondary-button" type="button">上传文件</button>
+          <input id="persona-file" type="file" accept=".txt,.md,.log,.json,.csv,.pdf" multiple>
+          <button id="upload-persona-file" class="secondary-button" type="button">上传资料文件</button>
         </div>
         <input id="persona-label" type="text" placeholder="资料标题，例如：伊蕾娜设定集">
         <textarea id="persona-text" rows="7" placeholder="直接粘贴设定、对白、人物分析或小说片段…"></textarea>

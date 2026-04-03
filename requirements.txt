@@ -7,3 +7,4 @@ json_repair==0.19.2
 colored==2.2.4
 pydantic==1.10.14
 Flask==3.1.0
+pypdf==5.4.0

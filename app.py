@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import copy
 import json
-import os
 import traceback
+import uuid
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
@@ -9,8 +11,12 @@ from threading import Lock
 from flask import Flask, jsonify, render_template, request, send_from_directory
 from PIL import Image
 from werkzeug.utils import secure_filename
+try:
+    from pypdf import PdfReader
+except Exception:
+    PdfReader = None
 
-from const import APP_DIR, PERSONA_SAVE_PATH, SAVE_PATH
+from const import APP_DIR, NEW_MEMORY_STATE_PATH, NEW_PERSONA_STATE_PATH, PERSONA_SAVE_PATH, SAVE_PATH
 from main import AIConfig, AISystem, PersonalityConfig, check_has_valid_key
 
 
@@ -18,7 +24,7 @@ BASE_DIR = Path(APP_DIR)
 STATE_PATH = BASE_DIR / "frontend_state.json"
 UPLOAD_DIR = BASE_DIR / "uploads"
 AVATAR_DIR = UPLOAD_DIR / "avatars"
-ALLOWED_TEXT_SUFFIXES = {".txt", ".md", ".log", ".json", ".csv"}
+ALLOWED_TEXT_SUFFIXES = {".txt", ".md", ".log", ".json", ".csv", ".pdf"}
 ALLOWED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -26,10 +32,7 @@ AVATAR_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _default_frontend_state():
-    return {
-        "avatar_path": "",
-        "recent_activity": [],
-    }
+    return {"avatar_path": "", "recent_activity": []}
 
 
 def _load_frontend_state():
@@ -54,13 +57,7 @@ def _save_frontend_state(state):
 
 def _append_activity(state, text):
     activity = state.setdefault("recent_activity", [])
-    activity.insert(
-        0,
-        {
-            "text": text,
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        },
-    )
+    activity.insert(0, {"text": text, "time": datetime.now().strftime("%Y-%m-%d %H:%M")})
     del activity[10:]
     _save_frontend_state(state)
 
@@ -87,8 +84,38 @@ def _split_bubbles(text):
     return lines if len(lines) > 1 else [normalized]
 
 
+def _read_persona_text(file_path, suffix):
+    suffix = (suffix or "").lower()
+    path = Path(file_path)
+    if suffix == ".pdf":
+        if PdfReader is None:
+            raise ValueError("当前环境未安装 PDF 解析依赖，请先安装 pypdf，或改上传 txt / md / json 文件。")
+        try:
+            reader = PdfReader(str(path))
+            text = "\n".join((page.extract_text() or "").strip() for page in reader.pages)
+        except Exception as exc:
+            raise ValueError(f"PDF 读取失败：{exc}") from exc
+        text = text.strip()
+        if not text:
+            raise ValueError("这个 PDF 没有解析出可用文本，请换成文本版资料或可复制文本的 PDF。")
+        return text
+
+    for encoding in ("utf-8", "utf-8-sig", "gb18030", "gbk"):
+        try:
+            text = path.read_text(encoding=encoding).strip()
+            if text:
+                return text
+        except UnicodeDecodeError:
+            continue
+    text = path.read_text(encoding="utf-8", errors="ignore").strip()
+    if not text:
+        raise ValueError("文件没有解析出可用文本，请确认不是空文件，或换用 txt / md / json / pdf。")
+    return text
+
+
 def _friendliness_hearts(value):
-    heart_count = max(0, min(5, int(round((value + 100) / 40))))
+    normalized = max(0.0, min(1.0, float(value)))
+    heart_count = max(0, min(5, int(round(normalized * 5))))
     return "❤" * heart_count if heart_count else "♡"
 
 
@@ -103,6 +130,10 @@ def _mood_to_zh(mood_name):
         "anxious": "紧张",
         "disdainful": "冷淡",
         "hostile": "不悦",
+        "平静": "平静",
+        "愉快": "愉快",
+        "关切": "关切",
+        "受伤": "受伤",
     }
     return mapping.get(mood_name, mood_name)
 
@@ -116,11 +147,7 @@ def _serialize_message(message):
         content = str(content or "")
     role = message.get("role", "assistant")
     bubbles = _split_bubbles(content) if role == "assistant" else [content.strip()] if content.strip() else []
-    return {
-        "role": role,
-        "content": content,
-        "bubbles": bubbles,
-    }
+    return {"role": role, "content": content, "bubbles": bubbles}
 
 
 def _has_user_conversation():
@@ -129,13 +156,24 @@ def _has_user_conversation():
 
 def _bootstrap_ai():
     ai = AISystem.load(SAVE_PATH)
-    is_new = ai is None
-    if is_new:
+    if ai is None:
         ai = AISystem()
-        ai.on_startup()
-    else:
-        ai.on_startup()
+    ai.on_startup()
     return ai
+
+
+def _new_relation_snapshot():
+    state = getattr(_ai_system, "new_memory_state", None)
+    return getattr(state, "relation_state", None) if state is not None else None
+
+
+def _current_mood_snapshot():
+    machine = getattr(_ai_system, "emotion_state_machine", None)
+    return getattr(machine, "current_state", None) if machine is not None else None
+
+
+def _new_persona_snapshot():
+    return getattr(_ai_system, "new_persona_state", None)
 
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
@@ -174,6 +212,7 @@ def _build_snapshot():
         serialized = _serialize_message(message)
         if serialized["content"]:
             history.append(serialized)
+
     avatar_path = _frontend_state.get("avatar_path", "")
     avatar_url = ""
     if avatar_path:
@@ -181,21 +220,48 @@ def _build_snapshot():
             avatar_url = "/uploads/" + Path(avatar_path).relative_to(UPLOAD_DIR).as_posix()
         except Exception:
             avatar_url = ""
+
     has_user_conversation = _has_user_conversation()
-    mood_name = _mood_to_zh(_ai_system.emotion_system.get_mood_name()) if has_user_conversation else "平静"
-    affinity = _friendliness_hearts(_ai_system.relation_system.friendliness) if has_user_conversation else "♡"
-    friendliness = round(_ai_system.relation_system.friendliness, 2) if has_user_conversation else 0.0
-    mood_description = _ai_system.emotion_system.get_mood_prompt() if has_user_conversation else "情绪稳定，尚未因对话产生明显波动。"
+    relation_state = _new_relation_snapshot()
+    emotion_state = _current_mood_snapshot()
+    persona_state = _new_persona_snapshot()
+    persona_identity = getattr(getattr(persona_state, "immutable_core", None), "identity", None)
+    persona_metadata = getattr(persona_state, "metadata", {}) if persona_state is not None else {}
+    persona_keywords = list(persona_metadata.get("display_keywords", []) or [])
+    persona_chunk_count = len(getattr(getattr(persona_state, "evidence_vault", None), "parent_chunks", []) or [])
+    if not persona_chunk_count:
+        persona_chunk_count = _ai_system.persona_system.chunk_count
+
+    if has_user_conversation and emotion_state is not None:
+        mood_name = _mood_to_zh(emotion_state.mood)
+        mood_description = f"当前情绪为 {mood_name}，强度 {round(float(emotion_state.intensity), 2)}。"
+    elif has_user_conversation:
+        mood_name = _mood_to_zh(_ai_system.emotion_system.get_mood_name())
+        mood_description = _ai_system.emotion_system.get_mood_prompt()
+    else:
+        mood_name = "平静"
+        mood_description = "情绪稳定，尚未因对话产生明显波动。"
+
+    if has_user_conversation and relation_state is not None:
+        friendliness = round(float(relation_state.affection), 2)
+        affinity = _friendliness_hearts(relation_state.affection)
+    elif has_user_conversation:
+        friendliness = round((_ai_system.relation_system.friendliness + 100) / 200, 2)
+        affinity = _friendliness_hearts((_ai_system.relation_system.friendliness + 100) / 200)
+    else:
+        friendliness = 0.0
+        affinity = "♡"
+
     return {
         "agent": {
-            "name": _ai_system.config.name,
+            "name": getattr(persona_identity, "name", "") or _ai_system.config.name,
             "avatarUrl": avatar_url,
             "mood": mood_name,
             "moodDescription": mood_description,
             "friendliness": friendliness,
             "affinity": affinity,
-            "personaChunks": _ai_system.persona_system.chunk_count,
-            "keywords": _ai_system.persona_system.get_display_keywords(),
+            "personaChunks": persona_chunk_count,
+            "keywords": persona_keywords or _ai_system.persona_system.get_display_keywords(),
             "personaStatus": _ai_system.persona_system.get_status().dict(),
         },
         "history": history,
@@ -225,27 +291,25 @@ def api_chat():
     message = (payload.get("message") or "").strip()
     if not message:
         return jsonify({"ok": False, "error": "消息不能为空。"}), 400
+
     with _ai_lock:
         backup = copy.deepcopy(_ai_system)
         try:
             response = _ai_system.send_message(message)
             _save_ai()
-            _append_activity(_frontend_state, f"与 {_ai_system.config.name} 完成了一轮对话")
+            _append_activity(_frontend_state, f"{_ai_system.config.name} 完成了一轮对话")
         except Exception as exc:
             traceback.print_exc()
             fallback_reply = "刚刚这条消息我没能顺利接住，可能是网络或模型服务暂时不稳定。你可以再发一次，我会继续。"
             try:
                 if _ai_system.get_message_history(False) and _ai_system.get_message_history(False)[-1].get("role") != "assistant":
                     _ai_system.buffer.add_message("assistant", fallback_reply)
-                _append_activity(_frontend_state, f"与 {_ai_system.config.name} 的一轮对话未完整完成")
+                _append_activity(_frontend_state, f"{_ai_system.config.name} 的一轮对话未完整完成")
                 _save_ai()
                 return jsonify(
                     {
                         "ok": True,
-                        "assistant": {
-                            "content": fallback_reply,
-                            "bubbles": _split_bubbles(fallback_reply),
-                        },
+                        "assistant": {"content": fallback_reply, "bubbles": _split_bubbles(fallback_reply)},
                         "snapshot": _build_snapshot(),
                         "degraded": True,
                     }
@@ -253,13 +317,11 @@ def api_chat():
             except Exception:
                 globals()["_ai_system"] = backup
                 return jsonify({"ok": False, "error": f"发送失败：{exc}"}), 500
+
         return jsonify(
             {
                 "ok": True,
-                "assistant": {
-                    "content": response,
-                    "bubbles": _split_bubbles(response),
-                },
+                "assistant": {"content": response, "bubbles": _split_bubbles(response)},
                 "snapshot": _build_snapshot(),
             }
         )
@@ -328,54 +390,68 @@ def api_persona_preview():
 def api_persona_confirm():
     payload = request.get_json(force=True, silent=True) or {}
     preview_id = (payload.get("previewId") or "").strip()
+    selected_keywords = payload.get("selectedKeywords") or []
     if not preview_id:
         return jsonify({"ok": False, "error": "previewId 不能为空。"}), 400
     with _ai_lock:
         try:
-            result = _ai_system.persona_system.confirm_preview(preview_id)
+            result = _ai_system.persona_system.confirm_preview(preview_id, selected_keywords=selected_keywords)
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
         preview = result["preview"]
         if preview.persona_name and preview.persona_name != _ai_system.config.name:
             _set_agent_name(preview.persona_name)
         _save_ai()
-        _append_activity(_frontend_state, f"已确认写入 {preview.persona_name} 的冷启动人设")
-        return jsonify(
-            {
-                "ok": True,
-                "count": result["count"],
-                "preview": preview.dict(),
-                "snapshot": _build_snapshot(),
-            }
-        )
+        _append_activity(_frontend_state, f"已确认写入 {preview.persona_name} 的人设预览")
+        return jsonify({"ok": True, "count": result["count"], "preview": preview.dict(), "snapshot": _build_snapshot()})
 
 
 @app.post("/api/persona/file")
 def api_persona_file():
-    file = request.files.get("file")
+    files = [item for item in request.files.getlist("file") if item and item.filename]
     persona_name = (request.form.get("personaName") or "").strip() or _ai_system.config.name
     work_title = (request.form.get("workTitle") or "").strip()
-    if file is None or not file.filename:
-        return jsonify({"ok": False, "error": "没有收到文件。"}), 400
-    suffix = Path(file.filename).suffix.lower()
-    if suffix not in ALLOWED_TEXT_SUFFIXES:
-        return jsonify({"ok": False, "error": "仅支持 .txt .md .log .json .csv 文件。"}), 400
-    safe_name = secure_filename(file.filename) or f"persona{suffix}"
-    target = UPLOAD_DIR / safe_name
-    file.save(target)
-    with open(target, "r", encoding="utf-8", errors="ignore") as saved_file:
-        text = saved_file.read()
+    if not files:
+        return jsonify({"ok": False, "error": "没有收到资料文件。"}), 400
+
+    saved_files = []
+    local_snippets = []
+    seen_local_texts = set()
+    try:
+        for file in files:
+            suffix = Path(file.filename).suffix.lower()
+            if suffix not in ALLOWED_TEXT_SUFFIXES:
+                return jsonify({"ok": False, "error": "仅支持 .txt / .md / .log / .json / .csv / .pdf 文件。"}), 400
+            safe_name = secure_filename(file.filename) or f"persona{suffix}"
+            unique_name = f"{uuid.uuid4().hex[:8]}_{safe_name}"
+            target = UPLOAD_DIR / unique_name
+            file.save(target)
+            saved_files.append((target, safe_name, suffix))
+        for target, safe_name, suffix in saved_files:
+            text = _read_persona_text(target, suffix)
+            canonical = " ".join(text.split())
+            if not canonical or canonical in seen_local_texts:
+                continue
+            seen_local_texts.add(canonical)
+            local_snippets.append({"source": "local", "title": safe_name, "text": text})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    if not local_snippets:
+        return jsonify({"ok": False, "error": "这批资料没有解析出新的有效内容。"}), 400
+
     with _ai_lock:
         try:
             preview = _ai_system.persona_system.preview_from_sources(
                 persona_name=persona_name,
                 work_title=work_title,
-                local_text=text,
-                local_label=safe_name,
+                local_text="",
+                local_label="persona_batch",
+                local_snippets=local_snippets,
             )
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
-        _append_activity(_frontend_state, f"已根据文件资料生成 {persona_name} 的待确认预览")
+        _append_activity(_frontend_state, f"已根据 {len(local_snippets)} 份资料生成 {persona_name} 的待确认预览")
         return jsonify({"ok": True, "preview": preview.dict(), "snapshot": _build_snapshot()})
 
 
@@ -410,7 +486,7 @@ def api_clear_persona():
 def api_reset():
     global _ai_system, _frontend_state
     with _ai_lock:
-        for path in (Path(SAVE_PATH), Path(PERSONA_SAVE_PATH), STATE_PATH):
+        for path in (Path(SAVE_PATH), Path(PERSONA_SAVE_PATH), Path(NEW_MEMORY_STATE_PATH), Path(NEW_PERSONA_STATE_PATH), STATE_PATH):
             if path.exists():
                 path.unlink()
         if AVATAR_DIR.exists():
@@ -423,12 +499,7 @@ def api_reset():
         _ai_system.on_startup()
         _save_ai()
         _append_activity(_frontend_state, "已删除全部存档并重新初始化角色")
-        return jsonify(
-            {
-                "ok": True,
-                "snapshot": _build_snapshot(),
-            }
-        )
+        return jsonify({"ok": True, "snapshot": _build_snapshot()})
 
 
 if __name__ == "__main__":

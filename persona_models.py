@@ -35,6 +35,12 @@ class PersonaSourceSnippet(BaseModel):
     text: str
 
 
+class PersonaKeywordOption(BaseModel):
+    source: str
+    title: str = ""
+    keywords: List[str] = Field(default_factory=list)
+
+
 class PersonaPreviewModel(BaseModel):
     preview_id: str
     persona_name: str
@@ -42,6 +48,8 @@ class PersonaPreviewModel(BaseModel):
     source_label: str
     source_text: str
     snippets: List[PersonaSourceSnippet] = Field(default_factory=list)
+    keyword_options: List[PersonaKeywordOption] = Field(default_factory=list)
+    selected_keywords: List[str] = Field(default_factory=list)
     summary: PersonaSummaryModel
     created_at: str
     mode: str = "cold_start"

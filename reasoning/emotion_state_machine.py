@@ -1,5 +1,4 @@
-"""管理 AI 情绪的系统。"""
-
+﻿
 import math
 import time
 import random
@@ -26,14 +25,13 @@ from utils import (
 from safe_colored import Fore
 from llm import MistralLLM, FallbackMistralLLM
 
-RELATIONSHIP_FRIENDLINESS_GAIN = 0.55
-RELATIONSHIP_DOMINANCE_GAIN = 0.5
-EMOTION_RESPONSE_GAIN = 0.45
-MESSAGE_SIGNAL_GAIN = 0.28
+RELATIONSHIP_FRIENDLINESS_GAIN = 0.32
+RELATIONSHIP_DOMINANCE_GAIN = 0.24
+EMOTION_RESPONSE_GAIN = 0.32
+MESSAGE_SIGNAL_GAIN = 0.12
 
 
 def get_default_mood(openness, conscientious, extrovert, agreeable, neurotic):
-	"""将大五人格数值转换为 PAD 情绪向量。"""
 	# 与其他维度不同，神经质越低越好。
 	pleasure = 0.12 * extrovert + 0.59 * agreeable - 0.19 * neurotic
 	arousal = 0.15 * openness + 0.3 * agreeable + 0.57 * neurotic
@@ -42,7 +40,6 @@ def get_default_mood(openness, conscientious, extrovert, agreeable, neurotic):
 	
 
 def summarize_personality(openness, conscientious, extrovert, agreeable, neurotic):
-	"""将人格数值总结为自然语言人格描述。"""
 	model = FallbackMistralLLM()
 	
 	# 将 -1.0 到 +1.0 的范围重新映射到 0 到 100。
@@ -70,7 +67,6 @@ def summarize_personality(openness, conscientious, extrovert, agreeable, neuroti
 
 
 class PersonalitySystem:
-	"""定义 AI 人格的系统。"""
 
 	def __init__(self, openness, conscientious, extrovert, agreeable, neurotic):
 		self.open = openness
@@ -82,7 +78,6 @@ class PersonalitySystem:
 		self.summary = ""
 	
 	def get_summary(self):
-		"""生成人格数值摘要。"""
 		if not self.summary:
 			self.summary = summarize_personality(
 				self.open,
@@ -95,7 +90,6 @@ class PersonalitySystem:
 	
 
 class Emotion:
-	"""定义情绪或心境的三维向量。"""
 
 	def __init__(
 		self,
@@ -109,7 +103,6 @@ class Emotion:
 	
 	@classmethod
 	def from_personality(cls, openness, conscientious, extrovert, agreeable, neurotic):
-		"""将给定人格数值转换为 Emotion 向量对象。"""
 		return cls(*get_default_mood(openness, conscientious, extrovert, agreeable, neurotic))
 	
 	def __add__(self, other):
@@ -185,7 +178,6 @@ class Emotion:
 		return NotImplemented
 
 	def dot(self, other):
-		"""返回与给定情绪的点积对齐程度。"""
 		return (
 			self.pleasure * other.pleasure
 			+ self.arousal * other.arousal
@@ -193,11 +185,9 @@ class Emotion:
 		)
 
 	def get_intensity(self):
-		"""获取情绪强度。"""
 		return math.sqrt(self.pleasure**2 + self.arousal ** 2 + self.dominance**2) / math.sqrt(3)
 
 	def distance(self, other):
-		"""返回两种情绪之间的距离。"""
 		delta_pleasure = self.pleasure - other.pleasure
 		delta_arousal = self.arousal - other.arousal
 		delta_dominance = self.dominance - other.dominance
@@ -208,14 +198,11 @@ class Emotion:
 		return max(abs(self.pleasure), abs(self.arousal), abs(self.dominance))
 
 	def clamp(self):
-		"""若向量超出范围，则按范数进行裁剪。"""
 		norm = self.get_norm()
 		if norm > 1:
 			self /= norm
 	
 	def copy(self):
-		"""创建当前情绪向量的副本。
-		对副本的修改不会影响原对象。"""
 		return self.__class__(
 			self.pleasure,
 			self.arousal,
@@ -223,7 +210,6 @@ class Emotion:
 		)
 		
 	def is_same_octant(self, other):
-		"""检查两种情绪是否位于同一象限。"""
 		return (
 			(self.pleasure >= 0) == (other.pleasure >= 0)
 			and (self.arousal >= 0) == (other.arousal >= 0)
@@ -236,7 +222,6 @@ class Emotion:
 
 
 class RelationshipSystem:
-	"""管理 AI 与用户关系的系统。"""
 	
 	def __init__(self):
 		self.friendliness = 0.0
@@ -250,20 +235,17 @@ class RelationshipSystem:
 		friendliness=None,
 		dominance=None
 	):
-		"""设置关系数值。"""
 		if friendliness is not None:
 			self.friendliness = max(-100, min(friendliness, 100))
 		if dominance is not None:
 			self.dominance = max(-100, min(dominance, 100))
 	
 	def tick(self, dt):
-		"""执行一次关系更新。"""
 		num_days = dt / 86400
 		self.friendliness *= math.exp(-num_days/90)
 		self.dominance *= math.exp(-num_days/120)
 
 	def on_user_message(self, text):
-		"""根据用户消息对关系进行轻微调整。"""
 		text = (text or "").strip()
 		if not text:
 			return
@@ -275,45 +257,49 @@ class RelationshipSystem:
 
 		friendliness_delta = 0.0
 		dominance_delta = 0.0
-		praise_tokens = ("喜欢你", "想你", "爱你", "可爱", "厉害", "真棒", "好喜欢", "谢谢你", "辛苦了", "在意你")
-		warm_tokens = ("早安", "晚安", "拜托啦", "陪陪我", "抱抱", "想和你聊", "一直陪着", "信任你")
-		self_disclosure_tokens = ("我觉得", "我有点", "我今天", "我想", "我最近", "我其实", "我有", "我正在", "我担心", "我害怕")
-		interest_tokens = ("旅行", "魔女", "自由", "风景", "故事", "书", "天空", "扫帚", "冒险")
-		negative_tokens = ("闭嘴", "烦死了", "讨厌你", "滚", "无聊", "笨蛋", "别烦我", "懒得理你")
-		conflict_tokens = ("你错了", "你真差", "没意思", "骗人", "失望")
+
+		praise_tokens = ("喜欢你", "很喜欢你", "爱你", "谢谢你", "你真好", "你好温柔", "好可爱", "好厉害", "真棒", "辛苦了")
+		warm_tokens = ("早安", "晚安", "陪陪我", "抱抱", "想和你聊", "想你", "信任你", "想见你")
+		self_disclosure_tokens = ("我今天", "我最近", "我有点", "我其实", "我担心", "我害怕", "我难过", "我好开心", "我有些")
+		empathy_invites = ("可以陪我", "想跟你说", "想听听你", "我想和你聊聊")
+		negative_tokens = ("闭嘴", "烦死了", "讨厌你", "滚", "无聊", "笨蛋", "别烦我", "懒得理你", "阴阳怪气", "讽刺")
+		rejection_tokens = ("不喜欢你", "不想理你", "你真差", "你很烦", "失望", "恶心")
+		shared_interest_tokens = ("旅行", "故事", "风景", "魔法", "魔女", "自由", "天空", "冒险")
 
 		explicit_positive = any(token in text for token in praise_tokens)
 		warm_contact = any(token in text for token in warm_tokens)
 		self_disclosure = any(token in text for token in self_disclosure_tokens)
-		shared_interest = any(token in text for token in interest_tokens)
+		empathy_invite = any(token in text for token in empathy_invites)
+		shared_interest = any(token in text for token in shared_interest_tokens)
 		negative_contact = any(token in text for token in negative_tokens)
-		value_conflict = any(token in text for token in conflict_tokens)
+		explicit_rejection = any(token in text for token in rejection_tokens)
 
 		if explicit_positive:
-			friendliness_delta += 0.42
+			friendliness_delta += 0.22
 		if warm_contact:
-			friendliness_delta += 0.2
+			friendliness_delta += 0.12
 		if self_disclosure:
-			friendliness_delta += 0.14
-		if shared_interest and (explicit_positive or self_disclosure or warm_contact):
-			friendliness_delta += 0.1
+			friendliness_delta += 0.08
+		if empathy_invite:
+			friendliness_delta += 0.08
+		if shared_interest and (explicit_positive or self_disclosure or warm_contact or empathy_invite):
+			friendliness_delta += 0.05
 		if negative_contact:
-			friendliness_delta -= 0.55
+			friendliness_delta -= 0.2
+			dominance_delta += 0.04
+		if explicit_rejection:
+			friendliness_delta -= 0.34
 			dominance_delta += 0.08
-		if value_conflict:
-			friendliness_delta -= 0.28
-			dominance_delta += 0.05
 
-		is_meaningful_positive = friendliness_delta > 0.18
-		if is_meaningful_positive:
+		if friendliness_delta > 0.12:
 			self.positive_event_count += 1
 
-		warmup_factor = min(1.0, 0.25 + self.interaction_count / 20)
-		trust_factor = min(1.0, 0.35 + self.positive_event_count / 10)
+		warmup_factor = min(1.0, 0.18 + self.interaction_count / 36)
+		trust_factor = min(1.0, 0.22 + self.positive_event_count / 18)
 		if friendliness_delta > 0:
 			friendliness_delta *= warmup_factor * trust_factor
 		else:
-			friendliness_delta *= max(0.7, warmup_factor)
+			friendliness_delta *= max(0.75, warmup_factor)
 
 		friendliness_delta *= MESSAGE_SIGNAL_GAIN
 		dominance_delta *= MESSAGE_SIGNAL_GAIN
@@ -322,36 +308,35 @@ class RelationshipSystem:
 			self.change_relationship(friendliness_delta, dominance_delta)
 
 	def on_emotion(self, emotion, intensity):
-		"""在触发情绪时调用。"""
 		if emotion not in EMOTION_MAP or emotion == "Neutral":
 			return
 		if not hasattr(self, "positive_event_count"):
 			self.positive_event_count = 0
 
 		friendliness_weights = {
-			"Joy": 0.18,
-			"Gratitude": 0.35,
-			"Love": 0.2,
-			"HappyFor": 0.22,
-			"Admiration": 0.18,
-			"Pity": 0.08,
-			"Hope": 0.08,
-			"Relief": 0.1,
-			"Anger": -0.3,
-			"Hate": -0.4,
-			"Resentment": -0.2,
-			"Reproach": -0.18,
-			"Distress": -0.08,
-			"Disappointment": -0.12,
+			"Joy": 0.12,
+			"Gratitude": 0.2,
+			"Love": 0.16,
+			"HappyFor": 0.14,
+			"Admiration": 0.12,
+			"Pity": 0.05,
+			"Hope": 0.05,
+			"Relief": 0.07,
+			"Anger": -0.18,
+			"Hate": -0.24,
+			"Resentment": -0.12,
+			"Reproach": -0.12,
+			"Distress": -0.05,
+			"Disappointment": -0.08,
 		}
 		dominance_weights = {
-			"Pride": 0.12,
-			"Admiration": -0.05,
-			"Anger": 0.12,
-			"Reproach": 0.08,
-			"Love": -0.05,
-			"Gratitude": -0.04,
-			"Fear": -0.08,
+			"Pride": 0.08,
+			"Admiration": -0.03,
+			"Anger": 0.08,
+			"Reproach": 0.06,
+			"Love": -0.03,
+			"Gratitude": -0.03,
+			"Fear": -0.05,
 		}
 
 		friendliness = friendliness_weights.get(emotion, 0.0) * intensity * RELATIONSHIP_FRIENDLINESS_GAIN
@@ -362,7 +347,6 @@ class RelationshipSystem:
 			self.change_relationship(friendliness, dominance)
 		
 	def change_relationship(self, friendliness, dominance):
-		"""调整关系数值。"""
 		friendliness = max(-0.85, min(0.85, friendliness))
 		dominance = max(-0.45, min(0.45, dominance))
 		
@@ -377,7 +361,6 @@ class RelationshipSystem:
 		)	
 	
 	def print_relation(self):
-		"""显示关系数值。"""
 		print("关系：")
 		print("--------")
 		string = val_to_symbol_color(self.friendliness, 20, Fore.green, Fore.red, val_scale=100)
@@ -386,7 +369,6 @@ class RelationshipSystem:
 		print(f"支配度：{string}")
 	
 	def get_string(self):
-		"""将关系数值转换为字符串。"""
 		return "\n".join((
 			"Friendliness: " + val_to_symbol_color(self.friendliness, 20, val_scale=100),
 			"Dominance: " + val_to_symbol_color(self.dominance, 20, val_scale=100)
@@ -394,7 +376,6 @@ class RelationshipSystem:
 		
 	
 class EmotionSystem:
-	"""管理情绪状态的系统。"""
 	def __init__(
 		self,
 		personality_system,
@@ -538,7 +519,6 @@ class EmotionSystem:
 			self.mood.dominance = max(-1.0, min(1.0, dominance))
 
 	def add_emotion(self, emotion):
-		"""兼容旧调用：直接将情绪向量叠加到当前心境。"""
 		if emotion is None:
 			return
 		if not isinstance(emotion, Emotion):
@@ -546,8 +526,28 @@ class EmotionSystem:
 		self.mood += emotion
 		self.clamp_mood()
 
+	def apply_user_signal(self, text):
+		text = (text or "").strip()
+		if not text:
+			return
+
+		positive_tokens = ("开心", "高兴", "喜欢", "谢谢", "期待", "安心", "轻松", "幸福", "治愈", "太好了")
+		sad_tokens = ("难过", "伤心", "失落", "低落", "沮丧", "委屈", "想哭", "孤独", "累", "疲惫")
+		hostile_tokens = ("讨厌你", "烦死了", "闭嘴", "滚", "不喜欢你", "讽刺", "恶心", "失望")
+
+		delta = Emotion()
+		if any(token in text for token in positive_tokens):
+			delta += Emotion(0.035, 0.02, -0.005)
+		if any(token in text for token in sad_tokens):
+			delta += Emotion(-0.03, -0.02, -0.015)
+		if any(token in text for token in hostile_tokens):
+			delta += Emotion(-0.045, 0.03, 0.025)
+
+		if delta.get_intensity() > 0:
+			self.mood += delta
+			self.clamp_mood()
+
 	def reset_mood(self):
-		"""重置 AI 的心境。"""
 		self.mood = self.get_base_mood()
 	
 	def _get_adv(self, val):
@@ -725,3 +725,47 @@ if __name__ == "__main__":
 	)
 	print(get_default_mood(**kwargs))
 	print(summarize_personality(**kwargs))
+
+
+from pydantic import BaseModel, Field
+
+
+class EmotionSignal(BaseModel):
+	mood: str = "平静"
+	intensity: float = Field(default=0.0, ge=0.0, le=1.0)
+	valence: float = Field(default=0.0, ge=-1.0, le=1.0)
+
+
+class EmotionState(BaseModel):
+	mood: str = "平静"
+	intensity: float = Field(default=0.0, ge=0.0, le=1.0)
+	valence: float = Field(default=0.0, ge=-1.0, le=1.0)
+	updated_at: datetime = Field(default_factory=datetime.now)
+
+
+class EmotionStateMachine:
+	def __init__(self):
+		self.baseline = EmotionState()
+		self.current_state = EmotionState()
+		self.pending_signal = EmotionSignal()
+
+	def queue_signal(self, signal: EmotionSignal) -> None:
+		self.pending_signal = signal
+
+	def update_from_thought(self, thought_emotion: EmotionSignal) -> EmotionState:
+		valence = thought_emotion.valence * 0.7 + self.pending_signal.valence * 0.3
+		intensity = min(1.0, thought_emotion.intensity * 0.7 + self.pending_signal.intensity * 0.3)
+		self.current_state = EmotionState(
+			mood=thought_emotion.mood or self.pending_signal.mood or self.baseline.mood,
+			intensity=intensity,
+			valence=valence,
+			updated_at=datetime.now(),
+		)
+		self.pending_signal = EmotionSignal()
+		self._drift_to_baseline()
+		return self.current_state
+
+	def _drift_to_baseline(self) -> None:
+		self.current_state.valence = self.current_state.valence * 0.9 + self.baseline.valence * 0.1
+		self.current_state.intensity = self.current_state.intensity * 0.9 + self.baseline.intensity * 0.1
+
