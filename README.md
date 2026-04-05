@@ -87,7 +87,7 @@ Ireina/
 在项目根目录执行：
 
 ```powershell
-cd C:\Users\0yoyx\Desktop\code\python\Ireina
+cd 你的项目文件夹
 python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
@@ -208,4 +208,4 @@ python app.py
 - 角色模板生成质量
 - 故事块检索命中率
 - 工具结果与角色语气的自然融合
-- 端到端行为测试，而不是继续扩大系统复杂度
+- 开发与丰富更多工具
