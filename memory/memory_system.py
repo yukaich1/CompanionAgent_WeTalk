@@ -1,77 +1,5 @@
 ﻿from __future__ import annotations
 
-from datetime import datetime
-from pathlib import Path
-from typing import Literal
-
-from pydantic import BaseModel, Field
-
-
-class EpisodicRecord(BaseModel):
-    record_id: str
-    event_summary: str
-    perspective: Literal["CHARACTER_FIRST", "NARRATOR"] = "CHARACTER_FIRST"
-    emotional_valence: float = Field(default=0.0, ge=-1.0, le=1.0)
-    emotional_intensity: float = Field(default=0.0, ge=0.0, le=1.0)
-    character_emotion: str = "neutral"
-    relation_impact: dict[str, float] = Field(default_factory=dict)
-    strength: float = Field(default=0.5, ge=0.0, le=1.0)
-    created_at: datetime = Field(default_factory=datetime.now)
-    last_recalled_at: datetime | None = None
-    recall_count: int = 0
-    topic_tags: list[str] = Field(default_factory=list)
-    promoted: bool = False
-    conflicted: bool = False
-
-
-class SemanticRecord(BaseModel):
-    record_id: str
-    source_episode_ids: list[str] = Field(default_factory=list)
-    content: str
-    domain: str = ""
-    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    scope: Literal["USER_SPECIFIC"] = "USER_SPECIFIC"
-    created_at: datetime = Field(default_factory=datetime.now)
-    last_updated_at: datetime = Field(default_factory=datetime.now)
-
-
-class RelationState(BaseModel):
-    trust: float = Field(default=0.0, ge=0.0, le=1.0)
-    affection: float = Field(default=0.0, ge=0.0, le=1.0)
-    familiarity: float = Field(default=0.0, ge=0.0, le=1.0)
-    stage: str = "stranger"
-    last_significant_event: str = ""
-    last_updated: datetime = Field(default_factory=datetime.now)
-
-
-class MemorySystemState(BaseModel):
-    episodic_records: list[EpisodicRecord] = Field(default_factory=list)
-    semantic_records: list[SemanticRecord] = Field(default_factory=list)
-    relation_state: RelationState = Field(default_factory=RelationState)
-
-
-class MemorySystemStore:
-    def __init__(self, path: str | Path):
-        self.path = Path(path)
-
-    def load(self) -> MemorySystemState:
-        if not self.path.exists():
-            return MemorySystemState()
-        raw = self.path.read_text(encoding="utf-8")
-        if hasattr(MemorySystemState, "model_validate_json"):
-            return MemorySystemState.model_validate_json(raw)
-        return MemorySystemState.parse_raw(raw)
-
-    def save(self, state: MemorySystemState) -> None:
-        if hasattr(state, "model_dump_json"):
-            payload = state.model_dump_json(indent=2)
-        else:
-            payload = state.json(indent=2, ensure_ascii=False)
-        self.path.write_text(payload, encoding="utf-8")
-
-
-# ---- Runtime implementation merged from legacy_runtime.py ----
-
 import math
 import random
 import re
@@ -83,11 +11,10 @@ import faiss
 import numpy as np
 from rank_bm25 import BM25Okapi
 
-from const import *
-from reasoning.emotion_state_machine import Emotion
+from const import LSH_VEC_DIM, MEMORY_DECAY_TIME_MULT, MEMORY_RECENCY_FORGET_THRESHOLD, MEMORY_RETRIEVAL_TOP_K
 from llm import MistralLLM, mistral_embed_texts
-from utils import conversation_to_string, get_approx_time_ago_str, normalize_text
-from utils import format_timestamp
+from reasoning.emotion_state_machine import Emotion
+from utils import conversation_to_string, format_timestamp, get_approx_time_ago_str, normalize_text
 
 
 IMPORTANCE_PROMPT = """Your task is to rate the importance of the given memory from 1 to 10.
@@ -473,14 +400,10 @@ class MemorySystem:
 		self.short_term = ShortTermMemory()
 		self.long_term = LongTermMemory()
 		self.last_memory = datetime.now()
-		self.belief_system = None
-		self.legacy_belief_enabled = True
 		self.importance_counter = 0.0
 
 	def get_beliefs(self):
-		if self.belief_system is None:
-			return []
-		return self.belief_system.get_beliefs()
+		return []
 
 	def reset_importance(self):
 		self.importance_counter = 0.0
@@ -491,8 +414,6 @@ class MemorySystem:
 		self.last_memory = datetime.now()
 		self.short_term.add_memory(Memory(content, strength=strength, emotion=emotion))
 		self.importance_counter += importance / 10
-		if self.legacy_belief_enabled and self.belief_system is not None and not is_insight and importance >= 6:
-			self.belief_system.generate_new_belief(content, importance / 10)
 
 	def recall(self, query):
 		self.short_term.rehearse(query)
@@ -514,11 +435,9 @@ class MemorySystem:
 			self.last_memory = now
 
 		self.long_term.tick(dt)
-		if self.belief_system is not None:
-			self.belief_system.tick(dt)
 
 	def consolidate_memories(self):
-		print("姝ｅ湪灏嗘墍鏈夌煭鏈熻蹇嗘暣鍚堣嚦闀挎湡璁板繂...")
+		print("正在将所有短期记忆整合至长期记忆...")
 		memories = self.short_term.get_memories()
 		self.long_term.add_memories(memories)
 		self.short_term.clear_memories()

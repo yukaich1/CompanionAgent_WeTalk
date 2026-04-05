@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
@@ -14,8 +14,8 @@
     <aside class="sidebar">
       <div class="brand-card glass">
         <div class="eyebrow">Wetalk</div>
-        <h1>你的Virtual聊天伙伴</h1>
-        <p>そう、私です。</p>
+        <h1>你的虚拟聊天伙伴</h1>
+        <p>陪你聊天，也陪你把角色慢慢养成。</p>
       </div>
 
       <div class="status-card glass">
@@ -42,6 +42,7 @@
         </div>
         <div class="metric-label">人设关键词</div>
         <div id="keyword-list" class="tag-list"></div>
+        <div id="debug-evidence" class="debug-evidence hidden"></div>
       </div>
 
       <div class="activity-card glass">
@@ -102,6 +103,16 @@
 
       <section class="drawer-section">
         <div class="field-label">角色学习</div>
+        <div class="switch-row compact-switch-row">
+          <div>
+            <div class="field-label">人设联网补充</div>
+            <div class="inline-meta">开启后，上传资料会按 PIXIV 百科、萌娘百科、WIKI 的顺序依次补充检索。</div>
+          </div>
+          <label class="toggle">
+            <input id="persona-web-search-toggle" type="checkbox" checked>
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
         <div class="inline-form">
           <input id="persona-file" type="file" accept=".txt,.md,.log,.json,.csv,.pdf" multiple>
           <button id="upload-persona-file" class="secondary-button" type="button">上传资料文件</button>
@@ -114,6 +125,10 @@
           <div class="preview-head">
             <strong id="preview-title">待确认的人设预览</strong>
             <button id="confirm-preview" class="secondary-button" type="button">确认写入</button>
+          </div>
+          <div class="preview-template-block">
+            <div class="preview-source">角色基础模板（中文）</div>
+            <div id="preview-base-template" class="preview-base-template"></div>
           </div>
           <div id="preview-keywords" class="tag-list"></div>
           <div id="preview-snippets" class="preview-snippets"></div>

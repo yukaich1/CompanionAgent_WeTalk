@@ -1,21 +1,27 @@
 .env
+.env.*
 .venv/
+venv/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.log
+*.tmp
+*.temp
 
 uploads/
 frontend_state.json
-ireina_save.pkl
-ireina_persona.pkl
+ai_state.json
 memory_state.json
 persona_state.json
+ireina_save.pkl
+ireina_persona.pkl
 
 .idea/
 .vscode/
+.DS_Store
+Thumbs.db
 
 dist/
 build/
-
-*.log

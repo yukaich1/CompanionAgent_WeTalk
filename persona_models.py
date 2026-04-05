@@ -16,12 +16,40 @@ class PersonaSectionData(BaseModel):
     appearance: List[str] = Field(default_factory=list)
     core_setup: List[str] = Field(default_factory=list)
     life_experiences: List[str] = Field(default_factory=list)
+    moral_qualities: List[str] = Field(default_factory=list)
+    relationship_style: List[str] = Field(default_factory=list)
+    role_identity: List[str] = Field(default_factory=list)
+
+
+class PersonaStoryChunk(BaseModel):
+    story_id: str = ""
+    title: str = ""
+    summary: str = ""
+    content: str = ""
+    keywords: List[str] = Field(default_factory=list)
+    triggers: List[str] = Field(default_factory=list)
+    emotional_weight: str = "medium"
+    character_impact: str = ""
+    trigger_topics: List[str] = Field(default_factory=list)
+    source_confidence: str = ""
+    source_hint: str = ""
+
+
+class PersonaStyleExample(BaseModel):
+    text: str
+    scene: str = ""
+    emotion: str = ""
+    rules_applied: List[str] = Field(default_factory=list)
+    source: str = ""
+    affinity_level: str = "any"
 
 
 class PersonaSummaryModel(PersonaSectionData):
-    style_examples: List[str] = Field(default_factory=list)
+    character_voice_card: str = ""
+    style_examples: List[PersonaStyleExample] = Field(default_factory=list)
     natural_reference_triggers: List[str] = Field(default_factory=list)
     display_keywords: List[str] = Field(default_factory=list)
+    story_chunks: List[PersonaStoryChunk] = Field(default_factory=list)
     section_keywords: Dict[str, List[str]] = Field(default_factory=dict)
     meta_exclusion_words: List[str] = Field(default_factory=list)
     novel_persona_hints: List[str] = Field(default_factory=list)
@@ -47,6 +75,7 @@ class PersonaPreviewModel(BaseModel):
     work_title: str = ""
     source_label: str
     source_text: str
+    base_template_text: str = ""
     snippets: List[PersonaSourceSnippet] = Field(default_factory=list)
     keyword_options: List[PersonaKeywordOption] = Field(default_factory=list)
     selected_keywords: List[str] = Field(default_factory=list)

@@ -5,7 +5,7 @@ from datetime import datetime
 
 from config import DEFAULT_CONFIG
 from diagnostics.conflict_log import ConflictLog
-from memory.memory_system import EpisodicRecord, MemorySystemState, RelationState, SemanticRecord
+from memory.state_models import EpisodicRecord, MemorySystemState, RelationState, SemanticRecord
 
 
 class MemoryWriter:
@@ -36,15 +36,16 @@ class MemoryWriter:
         return state
 
     def _try_promote_semantic(self, state: MemorySystemState) -> None:
+        threshold = DEFAULT_CONFIG.memory.semantic_upgrade_threshold
         unpromoted = [record for record in state.episodic_records if not record.promoted]
-        if len(unpromoted) < DEFAULT_CONFIG.memory.semantic_upgrade_threshold:
+        if len(unpromoted) < threshold:
             return
-        batch = unpromoted[: DEFAULT_CONFIG.memory.semantic_upgrade_threshold]
-        content = "；".join(record.event_summary for record in batch)
+
+        batch = unpromoted[:threshold]
         semantic = SemanticRecord(
             record_id=str(uuid.uuid4()),
             source_episode_ids=[record.record_id for record in batch],
-            content=content,
+            content=" | ".join(record.event_summary for record in batch),
             domain=batch[0].topic_tags[0] if batch[0].topic_tags else "user_relation",
             confidence=min(0.5, DEFAULT_CONFIG.memory.semantic_confidence_step_cap * len(batch)),
             last_updated_at=datetime.now(),

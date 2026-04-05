@@ -1,4 +1,4 @@
-const state = {
+﻿const state = {
   snapshot: null,
   preview: null,
   selectedPreviewKeywords: [],
@@ -32,6 +32,7 @@ const elements = {
   agentAffinity: document.getElementById("agent-affinity"),
   personaCount: document.getElementById("persona-count"),
   keywordList: document.getElementById("keyword-list"),
+  debugEvidence: document.getElementById("debug-evidence"),
   activityList: document.getElementById("activity-list"),
   agentAvatar: document.getElementById("agent-avatar"),
   toast: document.getElementById("toast"),
@@ -40,6 +41,7 @@ const elements = {
   closeSettings: document.getElementById("close-settings"),
   nameInput: document.getElementById("name-input"),
   saveName: document.getElementById("save-name"),
+  personaWebSearchToggle: document.getElementById("persona-web-search-toggle"),
   avatarInput: document.getElementById("avatar-input"),
   uploadAvatar: document.getElementById("upload-avatar"),
   avatarEditor: document.getElementById("avatar-editor"),
@@ -50,6 +52,7 @@ const elements = {
   saveAvatarCrop: document.getElementById("save-avatar-crop"),
   previewPanel: document.getElementById("preview-panel"),
   previewTitle: document.getElementById("preview-title"),
+  previewBaseTemplate: document.getElementById("preview-base-template"),
   previewKeywords: document.getElementById("preview-keywords"),
   previewSnippets: document.getElementById("preview-snippets"),
   confirmPreview: document.getElementById("confirm-preview"),
@@ -87,12 +90,32 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function normalizeMoodLabel(value) {
+  const mapping = {
+    neutral: "平静",
+    exuberant: "雀跃",
+    dependent: "依恋",
+    relaxed: "放松",
+    docile: "温顺",
+    bored: "低落",
+    anxious: "紧张",
+    disdainful: "冷淡",
+    hostile: "不悦",
+    calm: "平静",
+    happy: "愉快",
+    concerned: "关切",
+    hurt: "受伤",
+  };
+  return mapping[value] || value || "平静";
+}
+
 function splitPreviewSnippets(preview) {
   return Array.isArray(preview?.snippets) ? preview.snippets : [];
 }
 
 function previewSourceLabel(source) {
   const mapping = {
+    combined: "综合提炼",
     local: "本地资料",
     web_summary: "联网补充摘要",
     web: "联网资料",
@@ -103,104 +126,49 @@ function previewSourceLabel(source) {
 function normalizeKeywordSelection(preview) {
   const selected = Array.isArray(preview?.selected_keywords) ? preview.selected_keywords : [];
   const fallback = Array.isArray(preview?.summary?.display_keywords) ? preview.summary.display_keywords : [];
-  const merged = [...selected, ...fallback].filter(Boolean);
-  return [...new Set(merged)].slice(0, 8);
+  return [...new Set([...selected, ...fallback].filter(Boolean))].slice(0, 8);
 }
 
-function renderPreviewKeywords(preview) {
-  const options = Array.isArray(preview?.keyword_options) ? preview.keyword_options : [];
-  state.selectedPreviewKeywords = normalizeKeywordSelection(preview);
-  if (!options.length) {
-    const keywords = preview.summary?.display_keywords || [];
-    elements.previewKeywords.innerHTML = keywords.length
-      ? keywords.map((keyword) => `<span class="tag">${escapeHtml(keyword)}</span>`).join("")
-      : `<span class="tag">等待提炼关键词</span>`;
-    return;
+function currentAgentName() {
+  const inputName = elements.nameInput?.value?.trim();
+  if (inputName) return inputName;
+  const snapshotName = state.snapshot?.agent?.name?.trim?.();
+  if (snapshotName) return snapshotName;
+  return elements.chatTitle?.textContent?.trim() || "";
+}
+
+function splitBubblesFromText(text) {
+  const normalized = (text || "").replace(/\r\n/g, "\n").trim();
+  if (!normalized) return [];
+
+  const paragraphs = normalized.split(/\n\n+/).map((part) => part.trim()).filter(Boolean);
+  if (paragraphs.length > 1) return paragraphs;
+
+  const lines = normalized.split(/\n+/).map((part) => part.trim()).filter(Boolean);
+  if (lines.length > 1) return lines;
+
+  if (normalized.length <= 90) return [normalized];
+
+  const sentences = normalized.split(/(?<=[。！？!?])\s*/).map((part) => part.trim()).filter(Boolean);
+  if (sentences.length <= 1) return [normalized];
+
+  const target = normalized.length < 260 ? 90 : 120;
+  const bubbles = [];
+  let current = [];
+  let currentLength = 0;
+
+  for (const sentence of sentences) {
+    if (current.length && currentLength + sentence.length > target) {
+      bubbles.push(current.join(" ").trim());
+      current = [sentence];
+      currentLength = sentence.length;
+    } else {
+      current.push(sentence);
+      currentLength += sentence.length;
+    }
   }
-
-  elements.previewKeywords.innerHTML = `
-    <div class="keyword-picker-head">
-      <strong>选择 8 个高权重关键词</strong>
-      <span id="preview-keyword-count" class="inline-meta">${state.selectedPreviewKeywords.length}/8</span>
-    </div>
-    <div class="keyword-groups">
-      ${options.map((option, optionIndex) => `
-        <div class="keyword-group">
-          <div class="preview-source">${escapeHtml(previewSourceLabel(option.source))}${option.title ? ` · ${escapeHtml(option.title)}` : ""}</div>
-          <div class="keyword-choice-list">
-            ${option.keywords.map((keyword, keywordIndex) => {
-              const checked = state.selectedPreviewKeywords.includes(keyword);
-              return `
-                <label class="keyword-choice ${checked ? "selected" : ""}">
-                  <input
-                    type="checkbox"
-                    data-option-index="${optionIndex}"
-                    data-keyword-index="${keywordIndex}"
-                    value="${escapeHtml(keyword)}"
-                    ${checked ? "checked" : ""}
-                  >
-                  <span>${escapeHtml(keyword)}</span>
-                </label>
-              `;
-            }).join("")}
-          </div>
-        </div>
-      `).join("")}
-    </div>
-  `;
-
-  const countNode = document.getElementById("preview-keyword-count");
-  elements.previewKeywords.querySelectorAll('input[type="checkbox"]').forEach((input) => {
-    input.addEventListener("change", (event) => {
-      const keyword = event.target.value;
-      if (event.target.checked) {
-        if (state.selectedPreviewKeywords.length >= 8) {
-          event.target.checked = false;
-          showToast("最多只能选择 8 个关键词");
-          return;
-        }
-        state.selectedPreviewKeywords = [...new Set([...state.selectedPreviewKeywords, keyword])];
-      } else {
-        state.selectedPreviewKeywords = state.selectedPreviewKeywords.filter((item) => item !== keyword);
-      }
-      countNode.textContent = `${state.selectedPreviewKeywords.length}/8`;
-      elements.previewKeywords.querySelectorAll(".keyword-choice").forEach((choice) => {
-        const inputNode = choice.querySelector("input");
-        choice.classList.toggle("selected", inputNode.checked);
-      });
-    });
-  });
-}
-
-function renderPreview(preview) {
-  state.preview = preview || null;
-  if (!preview) {
-    elements.previewPanel.classList.add("hidden");
-    elements.previewKeywords.innerHTML = "";
-    elements.previewSnippets.innerHTML = "";
-    state.selectedPreviewKeywords = [];
-    return;
-  }
-
-  elements.previewPanel.classList.remove("hidden");
-  elements.previewTitle.textContent = `${preview.persona_name}${preview.work_title ? ` · ${preview.work_title}` : ""} 待确认人设预览`;
-  renderPreviewKeywords(preview);
-
-  const snippets = splitPreviewSnippets(preview);
-  elements.previewSnippets.innerHTML = snippets.length
-    ? snippets.map((item) => `
-        <div class="preview-snippet">
-          <div class="preview-source">${escapeHtml(previewSourceLabel(item.source))}${item.title ? ` · ${escapeHtml(item.title)}` : ""}</div>
-          <div class="preview-text">${escapeHtml(item.text)}</div>
-        </div>
-      `).join("")
-    : `<div class="preview-snippet">暂无可展示的补充资料。</div>`;
-}
-
-function renderHistory(history) {
-  elements.messages.innerHTML = "";
-  history.forEach((message) => appendMessage(message));
-  elements.messages.scrollTop = elements.messages.scrollHeight;
+  if (current.length) bubbles.push(current.join(" ").trim());
+  return bubbles.filter(Boolean);
 }
 
 function createMessageRow(message) {
@@ -230,62 +198,166 @@ function createMessageRow(message) {
 
 function appendMessage(message) {
   const { row, stack } = createMessageRow(message);
-  const bubbles = (message.bubbles && message.bubbles.length ? message.bubbles : [message.content]).filter(Boolean);
-  bubbles.forEach((bubbleText) => {
+  const bubbles = (message.bubbles && message.bubbles.length ? message.bubbles : splitBubblesFromText(message.content)).filter(Boolean);
+  for (const bubbleText of bubbles) {
     const bubble = document.createElement("div");
     bubble.className = `bubble ${message.role}`;
     bubble.innerHTML = escapeHtml(bubbleText);
     stack.appendChild(bubble);
-  });
-  elements.messages.appendChild(row);
-}
-
-function typingDelayForChar(char) {
-  if ("，、；：".includes(char)) return 55;
-  if ("。！？…".includes(char)) return 120;
-  if (" ".includes(char)) return 8;
-  return 22;
-}
-
-async function streamAssistantMessage(message) {
-  const bubbles = (message.bubbles && message.bubbles.length ? message.bubbles : [message.content]).filter(Boolean);
-  if (!bubbles.length) return;
-
-  const { row, stack } = createMessageRow({ role: "assistant" });
-  elements.messages.appendChild(row);
-
-  for (let i = 0; i < bubbles.length; i += 1) {
-    setTypingStatus("正在输入…");
-    const bubbleText = bubbles[i];
-    const bubble = document.createElement("div");
-    bubble.className = "bubble assistant";
-    bubble.innerHTML = "";
-    stack.appendChild(bubble);
-    elements.messages.scrollTop = elements.messages.scrollHeight;
-
-    let rendered = "";
-    for (const char of bubbleText) {
-      rendered += char;
-      bubble.innerHTML = escapeHtml(rendered);
-      elements.messages.scrollTop = elements.messages.scrollHeight;
-      await sleep(typingDelayForChar(char));
-    }
-
-    await sleep(i === bubbles.length - 1 ? 80 : 420);
   }
+  elements.messages.appendChild(row);
+}
+
+function renderHistory(history) {
+  elements.messages.innerHTML = "";
+  history.forEach((message) => appendMessage(message));
+  elements.messages.scrollTop = elements.messages.scrollHeight;
+}
+
+function renderDebugEvidence(debugInfo) {
+  if (!elements.debugEvidence) return;
+  const route = debugInfo?.routeType;
+  const personaEvidence = Array.isArray(debugInfo?.personaEvidence) ? debugInfo.personaEvidence : [];
+  const toolEvidence = Array.isArray(debugInfo?.toolEvidence) ? debugInfo.toolEvidence : [];
+  const items = [];
+
+  if (route) {
+    items.push(`
+      <div class="debug-evidence-item">
+        <strong>本轮路由</strong>
+        <div>${escapeHtml(route)}</div>
+      </div>
+    `);
+  }
+  if (personaEvidence.length) {
+    items.push(`
+      <div class="debug-evidence-item">
+        <strong>人设证据</strong>
+        <div>${personaEvidence.map((item) => escapeHtml(item)).join("<br>")}</div>
+      </div>
+    `);
+  }
+  if (toolEvidence.length) {
+    items.push(`
+      <div class="debug-evidence-item">
+        <strong>工具证据</strong>
+        <div>${toolEvidence.map((item) => escapeHtml(item)).join("<br>")}</div>
+      </div>
+    `);
+  }
+
+  if (!items.length) {
+    elements.debugEvidence.classList.add("hidden");
+    elements.debugEvidence.innerHTML = "";
+    return;
+  }
+
+  elements.debugEvidence.classList.remove("hidden");
+  elements.debugEvidence.innerHTML = items.join("");
+}
+
+function renderPreviewKeywords(preview) {
+  const options = Array.isArray(preview?.keyword_options) ? preview.keyword_options : [];
+  state.selectedPreviewKeywords = normalizeKeywordSelection(preview);
+
+  if (!options.length) {
+    const keywords = preview.summary?.display_keywords || [];
+    elements.previewKeywords.innerHTML = keywords.length
+      ? keywords.map((keyword) => `<span class="tag">${escapeHtml(keyword)}</span>`).join("")
+      : `<span class="tag">等待提炼关键词</span>`;
+    return;
+  }
+
+  const combinedOption = options[0] || { keywords: [] };
+  elements.previewKeywords.innerHTML = `
+    <div class="keyword-picker-head">
+      <strong>选择 8 个高权重关键词</strong>
+      <span id="preview-keyword-count" class="inline-meta">${state.selectedPreviewKeywords.length}/8</span>
+    </div>
+    <div class="keyword-groups">
+      <div class="keyword-group">
+        <div class="preview-source">综合提炼的角色关键词（中文词汇）</div>
+        <div class="keyword-choice-list">
+          ${combinedOption.keywords.map((keyword) => {
+            const checked = state.selectedPreviewKeywords.includes(keyword);
+            return `
+              <label class="keyword-choice ${checked ? "selected" : ""}">
+                <input type="checkbox" value="${escapeHtml(keyword)}" ${checked ? "checked" : ""}>
+                <span>${escapeHtml(keyword)}</span>
+              </label>
+            `;
+          }).join("")}
+        </div>
+      </div>
+    </div>
+  `;
+
+  const countNode = document.getElementById("preview-keyword-count");
+  elements.previewKeywords.querySelectorAll('input[type="checkbox"]').forEach((input) => {
+    input.addEventListener("change", (event) => {
+      const keyword = event.target.value;
+      if (event.target.checked) {
+        if (state.selectedPreviewKeywords.length >= 8) {
+          showToast("最多只能选择 8 个关键词");
+          event.target.checked = false;
+          return;
+        }
+        state.selectedPreviewKeywords = [...new Set([...state.selectedPreviewKeywords, keyword])];
+      } else {
+        state.selectedPreviewKeywords = state.selectedPreviewKeywords.filter((item) => item !== keyword);
+      }
+      countNode.textContent = `${state.selectedPreviewKeywords.length}/8`;
+      elements.previewKeywords.querySelectorAll(".keyword-choice").forEach((choice) => {
+        const inputNode = choice.querySelector("input");
+        choice.classList.toggle("selected", inputNode.checked);
+      });
+    });
+  });
+}
+
+function renderPreview(preview) {
+  state.preview = preview || null;
+  if (!preview) {
+    elements.previewPanel.classList.add("hidden");
+    elements.previewBaseTemplate.innerHTML = "";
+    elements.previewKeywords.innerHTML = "";
+    elements.previewSnippets.innerHTML = "";
+    state.selectedPreviewKeywords = [];
+    return;
+  }
+
+  elements.previewPanel.classList.remove("hidden");
+  const previewName = (preview.persona_name || currentAgentName() || "角色").trim();
+  elements.previewTitle.textContent = `${previewName}${preview.work_title ? ` · ${preview.work_title}` : ""} 待确认人设预览`;
+  elements.previewBaseTemplate.innerHTML = preview.base_template_text
+    ? escapeHtml(preview.base_template_text)
+    : "等待提炼角色基础模板。";
+
+  renderPreviewKeywords(preview);
+
+  const snippets = splitPreviewSnippets(preview);
+  elements.previewSnippets.innerHTML = snippets.length
+    ? snippets.map((item) => `
+        <div class="preview-snippet">
+          <div class="preview-source">${escapeHtml(previewSourceLabel(item.source))}${item.title ? ` · ${escapeHtml(item.title)}` : ""}</div>
+          <div class="preview-text">${escapeHtml(item.text)}</div>
+        </div>
+      `).join("")
+    : `<div class="preview-snippet">暂无可展示的补充资料。</div>`;
 }
 
 function renderSnapshot(snapshot, options = {}) {
   const preserveHistory = Boolean(options.preserveHistory);
   state.snapshot = snapshot;
-  const { agent, history, recentActivity } = snapshot;
+  const { agent, history, recentActivity, settings } = snapshot;
 
   elements.agentName.textContent = agent.name;
   elements.chatTitle.textContent = agent.name;
-  elements.agentMood.textContent = agent.mood;
+  elements.agentMood.textContent = normalizeMoodLabel(agent.mood);
   elements.agentAffinity.textContent = agent.affinity;
   elements.personaCount.textContent = `${agent.personaChunks} 条人设`;
   elements.nameInput.value = agent.name;
+  elements.personaWebSearchToggle.checked = Boolean(settings?.personaWebSearchEnabled);
 
   const avatarUrl = agent.avatarUrl || DEFAULT_AGENT_AVATAR;
   elements.agentAvatar.src = avatarUrl;
@@ -295,6 +367,7 @@ function renderSnapshot(snapshot, options = {}) {
     ? agent.keywords.map((keyword) => `<span class="tag">${escapeHtml(keyword)}</span>`).join("")
     : `<span class="tag">等待学习</span>`;
 
+  renderDebugEvidence(snapshot.debug);
   elements.activityList.innerHTML = recentActivity.length
     ? recentActivity.map((item) => `
         <div class="activity-item">
@@ -316,6 +389,38 @@ async function requestJson(url, options = {}) {
     throw new Error(data.error || "请求失败");
   }
   return data;
+}
+
+function typingDelayForChar(char) {
+  if ("，、；：".includes(char)) return 55;
+  if ("。！？…".includes(char)) return 120;
+  if (char === " ") return 8;
+  return 22;
+}
+
+async function streamAssistantMessage(message) {
+  const bubbles = (message.bubbles && message.bubbles.length ? message.bubbles : splitBubblesFromText(message.content)).filter(Boolean);
+  if (!bubbles.length) return;
+
+  const { row, stack } = createMessageRow({ role: "assistant" });
+  elements.messages.appendChild(row);
+
+  for (let i = 0; i < bubbles.length; i += 1) {
+    setTypingStatus("正在输入…");
+    const bubble = document.createElement("div");
+    bubble.className = "bubble assistant";
+    stack.appendChild(bubble);
+    elements.messages.scrollTop = elements.messages.scrollHeight;
+
+    let rendered = "";
+    for (const char of bubbles[i]) {
+      rendered += char;
+      bubble.innerHTML = escapeHtml(rendered);
+      elements.messages.scrollTop = elements.messages.scrollHeight;
+      await sleep(typingDelayForChar(char));
+    }
+    await sleep(i === bubbles.length - 1 ? 80 : 420);
+  }
 }
 
 async function bootstrap() {
@@ -359,8 +464,27 @@ async function saveName() {
       body: JSON.stringify({ name: elements.nameInput.value.trim() }),
     });
     renderSnapshot(data.snapshot);
+    if (state.preview) {
+      state.preview.persona_name = data.snapshot?.agent?.name || elements.nameInput.value.trim() || state.preview.persona_name;
+      renderPreview(state.preview);
+    }
     showToast("名称已更新");
   } catch (error) {
+    showToast(error.message);
+  }
+}
+
+async function savePersonaWebSearchToggle() {
+  try {
+    const data = await requestJson("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ personaWebSearchEnabled: Boolean(elements.personaWebSearchToggle.checked) }),
+    });
+    renderSnapshot(data.snapshot);
+    showToast(elements.personaWebSearchToggle.checked ? "已开启人设联网补充" : "已关闭人设联网补充");
+  } catch (error) {
+    elements.personaWebSearchToggle.checked = !elements.personaWebSearchToggle.checked;
     showToast(error.message);
   }
 }
@@ -383,61 +507,45 @@ function openAvatarEditor() {
 }
 
 function getAvatarViewport() {
-  const canvas = elements.avatarCanvas;
   return {
-    x: (canvas.width - AVATAR_VIEWPORT.size) / 2,
-    y: (canvas.height - AVATAR_VIEWPORT.size) / 2,
+    x: (elements.avatarCanvas.width - AVATAR_VIEWPORT.size) / 2,
+    y: (elements.avatarCanvas.height - AVATAR_VIEWPORT.size) / 2,
     size: AVATAR_VIEWPORT.size,
   };
 }
 
 function computeAvatarTransform() {
   const editor = state.avatarEditor;
-  const image = editor.image;
   const viewport = getAvatarViewport();
-  const baseScale = Math.max(viewport.size / image.width, viewport.size / image.height);
+  const baseScale = Math.max(viewport.size / editor.image.width, viewport.size / editor.image.height);
   const scale = baseScale * editor.scale;
-  const width = image.width * scale;
-  const height = image.height * scale;
+  const width = editor.image.width * scale;
+  const height = editor.image.height * scale;
   const x = elements.avatarCanvas.width / 2 - width / 2 + editor.offsetX;
   const y = elements.avatarCanvas.height / 2 - height / 2 + editor.offsetY;
   return { x, y, width, height, viewport };
 }
 
 function renderAvatarEditor() {
-  const editor = state.avatarEditor;
-  if (!editor.image) {
+  if (!state.avatarEditor.image) {
     avatarCanvasContext.clearRect(0, 0, elements.avatarCanvas.width, elements.avatarCanvas.height);
     return;
   }
   const { x, y, width, height, viewport } = computeAvatarTransform();
   avatarCanvasContext.clearRect(0, 0, elements.avatarCanvas.width, elements.avatarCanvas.height);
-  avatarCanvasContext.drawImage(editor.image, x, y, width, height);
+  avatarCanvasContext.drawImage(state.avatarEditor.image, x, y, width, height);
 
   avatarCanvasContext.save();
   avatarCanvasContext.fillStyle = "rgba(8, 10, 14, 0.54)";
   avatarCanvasContext.beginPath();
   avatarCanvasContext.rect(0, 0, elements.avatarCanvas.width, elements.avatarCanvas.height);
-  avatarCanvasContext.arc(
-    viewport.x + viewport.size / 2,
-    viewport.y + viewport.size / 2,
-    viewport.size / 2,
-    0,
-    Math.PI * 2,
-    true,
-  );
+  avatarCanvasContext.arc(viewport.x + viewport.size / 2, viewport.y + viewport.size / 2, viewport.size / 2, 0, Math.PI * 2, true);
   avatarCanvasContext.fill("evenodd");
   avatarCanvasContext.restore();
 
   avatarCanvasContext.save();
   avatarCanvasContext.beginPath();
-  avatarCanvasContext.arc(
-    viewport.x + viewport.size / 2,
-    viewport.y + viewport.size / 2,
-    viewport.size / 2,
-    0,
-    Math.PI * 2,
-  );
+  avatarCanvasContext.arc(viewport.x + viewport.size / 2, viewport.y + viewport.size / 2, viewport.size / 2, 0, Math.PI * 2);
   avatarCanvasContext.strokeStyle = "rgba(255,255,255,0.96)";
   avatarCanvasContext.lineWidth = 3;
   avatarCanvasContext.stroke();
@@ -491,9 +599,8 @@ async function uploadAvatar() {
 }
 
 async function saveAvatarCrop() {
-  const editor = state.avatarEditor;
-  if (!editor.image) {
-    showToast("先选择头像图片");
+  if (!state.avatarEditor.image) {
+    showToast("请先选择头像图片");
     return;
   }
   const { x, y, width, height, viewport } = computeAvatarTransform();
@@ -503,7 +610,7 @@ async function saveAvatarCrop() {
   const outputContext = outputCanvas.getContext("2d");
   const scaleFactor = AVATAR_VIEWPORT.output / viewport.size;
   outputContext.drawImage(
-    editor.image,
+    state.avatarEditor.image,
     (x - viewport.x) * scaleFactor,
     (y - viewport.y) * scaleFactor,
     width * scaleFactor,
@@ -529,13 +636,13 @@ async function saveAvatarCrop() {
 
 async function uploadPersonaFile() {
   if (!elements.personaFile.files.length) {
-    showToast("先选择一个资料文件。");
+    showToast("请先选择一个资料文件。");
     return;
   }
   setTypingStatus("正在整理资料并补充信息…");
   const form = new FormData();
   Array.from(elements.personaFile.files).forEach((file) => form.append("file", file));
-  form.append("personaName", state.snapshot?.agent?.name || "");
+  form.append("personaName", currentAgentName());
   form.append("workTitle", "");
   try {
     const data = await requestJson("/api/persona/file", { method: "POST", body: form });
@@ -550,8 +657,6 @@ async function uploadPersonaFile() {
 }
 
 async function previewPersona(options = {}) {
-  const personaName = state.snapshot?.agent?.name || "";
-  const workTitle = "";
   const text = options.text ?? "";
   const label = options.label ?? "";
   if (!text) return;
@@ -561,17 +666,18 @@ async function previewPersona(options = {}) {
     const data = await requestJson("/api/persona/preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ personaName, workTitle, text, label }),
+      body: JSON.stringify({
+        personaName: currentAgentName(),
+        workTitle: "",
+        text,
+        label,
+      }),
     });
     renderSnapshot(data.snapshot);
     renderPreview(data.preview);
-    if (!options.silent) {
-      showToast("已生成待确认的人设预览");
-    }
+    if (!options.silent) showToast("已生成待确认的人设预览");
   } catch (error) {
-    if (!options.silent) {
-      showToast(error.message);
-    }
+    if (!options.silent) showToast(error.message);
   } finally {
     setTypingStatus("已连接");
   }
@@ -608,13 +714,10 @@ async function confirmPreview() {
 async function learnPersonaText() {
   const text = elements.personaText.value.trim();
   if (!text) {
-    showToast("先输入一段设定资料。");
+    showToast("请先输入一段设定资料。");
     return;
   }
-  await previewPersona({
-    text,
-    label: elements.personaLabel.value.trim(),
-  });
+  await previewPersona({ text, label: elements.personaLabel.value.trim() });
 }
 
 async function clearPersona() {
@@ -664,6 +767,7 @@ elements.closeSettings.addEventListener("click", () => elements.drawer.classList
 elements.drawer.querySelector(".drawer-backdrop").addEventListener("click", () => elements.drawer.classList.add("hidden"));
 
 elements.saveName.addEventListener("click", saveName);
+elements.personaWebSearchToggle.addEventListener("change", savePersonaWebSearchToggle);
 elements.uploadAvatar.addEventListener("click", uploadAvatar);
 elements.avatarInput.addEventListener("change", () => {
   if (elements.avatarInput.files.length) {

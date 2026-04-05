@@ -204,6 +204,14 @@ def convert_img_schema_to_url(url):
 def time_since_last_message_string(timestamp):
 	if not timestamp:
 		return "never (this is the first interaction)"
+	if isinstance(timestamp, str):
+		text = timestamp.strip()
+		if not text:
+			return "never (this is the first interaction)"
+		try:
+			timestamp = datetime.fromisoformat(text)
+		except ValueError:
+			return "recently"
 	delta_time = int((datetime.now() - timestamp).total_seconds())
 	if delta_time < 60:
 		return "just now"

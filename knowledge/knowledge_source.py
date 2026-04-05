@@ -62,6 +62,7 @@ class PersonaRecallResult(BaseModel):
     activated_features: list[str] = Field(default_factory=list)
     evidence_chunks: list[str] = Field(default_factory=list)
     source_breakdown: dict[str, int] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class MemoryRecordView(BaseModel):

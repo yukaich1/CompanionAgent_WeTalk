@@ -7,16 +7,17 @@ import requests
 from tools.base import AgentTool, ToolSpec
 
 
-WIKIS = [
-    "zh.moegirl.org.cn",
+PIXIV_DOMAIN = "dic.pixiv.net"
+MOEGIRL_DOMAIN = "zh.moegirl.org.cn"
+WIKI_DOMAINS = [
     "zh.wikipedia.org",
     "ja.wikipedia.org",
     "en.wikipedia.org",
 ]
 
 SITE_SEARCH_DOMAINS = [
-    "dic.pixiv.net",
-    "zh.moegirl.org.cn",
+    PIXIV_DOMAIN,
+    MOEGIRL_DOMAIN,
 ]
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Wetalk/1.0"
@@ -104,7 +105,7 @@ def _wiki_search(search_terms, max_results: int, timeout: int):
     snippets = []
     seen_titles = set()
 
-    for wiki in WIKIS:
+    for wiki in WIKI_DOMAINS:
         for term in search_terms:
             try:
                 search_url = (
@@ -158,6 +159,7 @@ class WebSearchTool(AgentTool):
             "query": "str",
             "max_results": "int",
             "timeout": "int",
+            "source_mode": "str",
         },
         output_schema={
             "snippets": [
@@ -171,7 +173,39 @@ class WebSearchTool(AgentTool):
         tags=["reference", "persona", "search", "web"],
     )
 
-    def run(self, persona_name, query="", max_results=3, timeout=8):
+    def _ordered_persona_search(self, search_terms, max_results: int, timeout: int):
+        deduped = []
+        seen = set()
+
+        for domain in (PIXIV_DOMAIN, MOEGIRL_DOMAIN):
+            domain_hits = []
+            for term in search_terms:
+                for item in _site_ddg_search(domain, term, max_results=max_results, timeout=timeout):
+                    key = (_clean_text(item.get("title", "")), _clean_text(item.get("text", "")))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    domain_hits.append(item)
+                    if len(domain_hits) >= max_results:
+                        break
+                if len(domain_hits) >= max_results:
+                    break
+            if domain_hits:
+                deduped.extend(domain_hits[:max_results])
+                return deduped[:max_results]
+
+        wiki_hits = _wiki_search(search_terms, max_results=max_results, timeout=timeout)
+        for item in wiki_hits:
+            key = (_clean_text(item.get("title", "")), _clean_text(item.get("text", "")))
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(item)
+            if len(deduped) >= max_results:
+                break
+        return deduped[:max_results]
+
+    def run(self, persona_name, query="", max_results=3, timeout=8, source_mode="general"):
         if not persona_name and not query:
             return {"snippets": []}
 
@@ -193,6 +227,10 @@ class WebSearchTool(AgentTool):
         if query and not persona_name:
             ddg_terms.append(query)
         ddg_terms = [term for term in ddg_terms if term]
+
+        if source_mode == "persona_ordered":
+            ordered_hits = self._ordered_persona_search(ddg_terms or search_terms, max_results=max_results, timeout=timeout)
+            return {"snippets": ordered_hits[:max_results]}
 
         for term in ddg_terms:
             for domain in SITE_SEARCH_DOMAINS:
