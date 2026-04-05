@@ -151,6 +151,12 @@ python app.py
 
 [http://127.0.0.1:5000](http://127.0.0.1:5000)
 
+<p align="center">
+  <img src="./assets/142919.png" alt="人设配置①" width="48%">
+  <img src="./assets/143025.png" alt="人设配置②" width="48%">
+</p>
+
+
 ## 使用流程
 
 1. 打开 Web 页面。
