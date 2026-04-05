@@ -196,6 +196,8 @@ python app.py
 - 天气查询
 - 网络搜索
 
+## 效果演示
+
 ![聊天界面演示](./assets/141804.png)
 
 <p align="center">
