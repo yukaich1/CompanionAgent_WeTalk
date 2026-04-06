@@ -1,7 +1,16 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from knowledge.knowledge_source import RouteDecision, RouteType, SearchMode
 from tools.intent_extractor import IntentExtractionResult, IntentExtractor
+
+
+INTENT_TO_ROUTE = {
+    "weather_query": (RouteType.E4, SearchMode.REALITY_SEARCH, "REALITY_FACTUAL"),
+    "web_search_query": (RouteType.E4, SearchMode.REALITY_SEARCH, "REALITY_FACTUAL"),
+    "emotional_interaction": (RouteType.E5, SearchMode.NONE, "RELATIONAL"),
+    "casual_chat": (RouteType.E1, SearchMode.NONE, "CHARACTER_INTERNAL"),
+    "help_request": (RouteType.E4, SearchMode.REALITY_SEARCH, "REALITY_FACTUAL"),
+}
 
 
 class QueryRouter:
@@ -34,20 +43,10 @@ class QueryRouter:
         self.last_intent_result = intent
         coverage = float(getattr(persona_recall, "coverage_score", 0.0) or 0.0)
 
-        if intent.intent == "weather_query":
-            return RouteDecision(type=RouteType.E4, web_search_mode=SearchMode.REALITY_SEARCH, info_domain="REALITY_FACTUAL")
-
-        if intent.intent == "web_search_query":
-            return RouteDecision(type=RouteType.E4, web_search_mode=SearchMode.REALITY_SEARCH, info_domain="REALITY_FACTUAL")
-
-        if intent.intent == "emotional_interaction":
-            return RouteDecision(type=RouteType.E5, web_search_mode=SearchMode.NONE, info_domain="RELATIONAL")
-
-        if intent.intent == "casual_chat":
-            return RouteDecision(type=RouteType.E1, web_search_mode=SearchMode.NONE, info_domain="CHARACTER_INTERNAL")
-
-        if intent.intent == "help_request" and intent.needs_tool:
-            return RouteDecision(type=RouteType.E4, web_search_mode=SearchMode.REALITY_SEARCH, info_domain="REALITY_FACTUAL")
+        if intent.intent in INTENT_TO_ROUTE:
+            route_type, search_mode, domain = INTENT_TO_ROUTE[intent.intent]
+            if intent.intent != "help_request" or intent.needs_tool:
+                return RouteDecision(type=route_type, web_search_mode=search_mode, info_domain=domain)
 
         if intent.intent == "value_judgment":
             if intent.needs_tool:

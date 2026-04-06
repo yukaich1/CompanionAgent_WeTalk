@@ -232,6 +232,11 @@ class WebSearchTool(AgentTool):
             ordered_hits = self._ordered_persona_search(ddg_terms or search_terms, max_results=max_results, timeout=timeout)
             return {"snippets": ordered_hits[:max_results]}
 
+        if source_mode == "general" and query:
+            wiki_snippets = _wiki_search([query], max_results=max_results, timeout=timeout)
+            if wiki_snippets:
+                return {"snippets": wiki_snippets[:max_results]}
+
         for term in ddg_terms:
             for domain in SITE_SEARCH_DOMAINS:
                 more = _site_ddg_search(domain, term, max_results=max_results - len(deduped), timeout=timeout)

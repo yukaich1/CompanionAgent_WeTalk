@@ -22,7 +22,7 @@ class ToolExecutionReport:
 
 
 class ToolRouter:
-    """接收结构化意图并执行工具，统一处理地点缺失和失败降级。"""
+    """接收结构化意图并执行工具，统一处理缺参、失败和结果整理。"""
 
     def __init__(self, registry):
         self.registry = registry
@@ -43,7 +43,7 @@ class ToolRouter:
         confidence = str(params.get("location_confidence") or "low").strip().lower()
         if not location:
             return ToolExecutionReport(
-                follow_up_message="……你想问哪里的天气？你刚才说得有点含糊，我还没法替你查。",
+                follow_up_message="你想问哪里的天气？刚才地点还不够明确，我没法替你查。",
             )
 
         call = ToolCall(
@@ -55,13 +55,17 @@ class ToolRouter:
         if not result.get("ok"):
             return self._failed_report(call, result)
 
+        summary = str(result.get("summary", "") or "").strip()
+        if not summary:
+            return self._failed_report(call, result)
+
         context_lines = [
             "[外部信息 - 天气]",
             f"地点：{result.get('location', location)}",
-            f"摘要：{str(result.get('summary', '') or '').strip()}",
+            f"摘要：{summary}",
         ]
         if confidence == "low":
-            context_lines.append("备注：地点来自上下文推断，回复时请保留一点谨慎。")
+            context_lines.append("备注：地点来自上下文推断，回答时请保持一点谨慎。")
         return ToolExecutionReport(
             calls=[call],
             results=[{"tool": call.name, "reason": call.reason, "result": result, "ok": True}],
@@ -74,31 +78,39 @@ class ToolRouter:
         if not query:
             return ToolExecutionReport()
 
-        is_persona_search = intent_result.intent == "character_related" and bool(persona_name)
         call = ToolCall(
             name="web_search",
             arguments={
-                "persona_name": persona_name if is_persona_search else "",
+                "persona_name": "",
                 "query": query,
                 "max_results": 4,
                 "timeout": 8,
-                "source_mode": "persona_ordered" if is_persona_search else "general",
+                "source_mode": "general",
             },
-            reason="用户需要外部信息支持当前回答。",
+            reason="当前问题需要外部信息支撑回答。",
         )
-        result = self._run_tool(call, fallback={"snippets": [], "summary": "联网搜索失败", "ok": False})
+        result = self._run_tool(call, fallback={"snippets": [], "summary": "", "ok": False})
         snippets = result.get("snippets", []) if isinstance(result, dict) else []
-        if not snippets:
-            return self._failed_report(call, result)
+        summary = str(result.get("summary", "") or "").strip() if isinstance(result, dict) else ""
 
-        header = "[外部信息 - 角色搜索]" if is_persona_search else "[外部信息 - 搜索]"
-        context_lines = [header, f"主题：{intent_result.extracted_topic or query}"]
+        context_lines: list[str] = []
+        if summary:
+            context_lines.extend(["[外部信息 - 搜索]", f"主题：{intent_result.extracted_topic or query}", f"摘要：{summary}"])
         for item in snippets[:4]:
             title = str(item.get("title", "") or "").strip()
             text = str(item.get("text", "") or "").strip()
             source = str(item.get("source", "web") or "web").strip()
             if text:
-                context_lines.append(f"[{source} | {title}] {text}")
+                if not context_lines:
+                    context_lines.extend(["[外部信息 - 搜索]", f"主题：{intent_result.extracted_topic or query}"])
+                line = f"[{source}"
+                if title:
+                    line += f" | {title}"
+                line += f"] {text}"
+                context_lines.append(line)
+
+        if not context_lines:
+            return self._failed_report(call, result)
 
         return ToolExecutionReport(
             calls=[call],

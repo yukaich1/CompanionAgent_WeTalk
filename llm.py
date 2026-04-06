@@ -1,4 +1,4 @@
-import json
+﻿import json
 import os
 import sys
 import time
@@ -10,16 +10,17 @@ import requests
 from dotenv import load_dotenv
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-load_dotenv(APP_DIR / ".env")
+load_dotenv(APP_DIR / ".env", override=True)
 
 EMBED_MAX_ITEMS_PER_BATCH = 96
 EMBED_MAX_CHARS_PER_BATCH = 24000
+LAST_LLM_DIAGNOSTICS: dict = {}
 
 DEFAULT_PROVIDER_PRESETS = {
 	"mistral": {
 		"label": "Mistral",
 		"base_url": "https://api.mistral.ai/v1",
-		"chat_model": "mistral-medium-latest",
+		"chat_model": "mistral-small-latest",
 		"embedding_model": "mistral-embed",
 	},
 	"openai": {
@@ -46,6 +47,12 @@ DEFAULT_PROVIDER_PRESETS = {
 		"chat_model": "deepseek-chat",
 		"embedding_model": None,
 	},
+	"minimax": {
+		"label": "MiniMax",
+		"base_url": "https://api.minimaxi.com/v1",
+		"chat_model": "MiniMax-M2.1-highspeed",
+		"embedding_model": None,
+	},
 	"custom": {
 		"label": "Custom",
 		"base_url": "",
@@ -66,6 +73,7 @@ LEGACY_KEY_ENV_BY_PROVIDER = {
 	"deepseek": "DEEPSEEK_API_KEY",
 	"openrouter": "OPENROUTER_API_KEY",
 	"siliconflow": "SILICONFLOW_API_KEY",
+	"minimax": "MINIMAX_API_KEY",
 }
 
 
@@ -81,6 +89,19 @@ class LLMSettings:
 	base_url: str
 	chat_model: str
 	embedding_model: str | None
+
+def _env_int(name: str, default: int, minimum: int = 1, maximum: int | None = None) -> int:
+	value = os.getenv(name)
+	if value is None or not str(value).strip():
+		return default
+	try:
+		number = int(str(value).strip())
+	except ValueError:
+		return default
+	number = max(minimum, number)
+	if maximum is not None:
+		number = min(maximum, number)
+	return number
 
 
 def _normalize_provider_name(name: str | None) -> str:
@@ -191,6 +212,62 @@ def _log_embedding_request(message: str):
 	print(f"[Embed:{settings.label}] {message}")
 
 
+def _message_content_length(content) -> int:
+	if isinstance(content, str):
+		return len(content)
+	if isinstance(content, list):
+		total = 0
+		for item in content:
+			if isinstance(item, dict):
+				total += len(str(item.get("text", "") or ""))
+			else:
+				total += len(str(item or ""))
+		return total
+	return len(str(content or ""))
+
+
+def _summarize_messages(messages) -> dict:
+	if isinstance(messages, str):
+		return {
+			"message_count": 1,
+			"roles": ["user"],
+			"content_chars": len(messages),
+			"max_message_chars": len(messages),
+		}
+	if not isinstance(messages, list):
+		value = str(messages or "")
+		return {
+			"message_count": 1,
+			"roles": ["user"],
+			"content_chars": len(value),
+			"max_message_chars": len(value),
+		}
+	roles: list[str] = []
+	lengths: list[int] = []
+	for message in messages:
+		if isinstance(message, dict):
+			roles.append(str(message.get("role", "")))
+			lengths.append(_message_content_length(message.get("content", "")))
+		else:
+			roles.append("user")
+			lengths.append(len(str(message or "")))
+	return {
+		"message_count": len(messages),
+		"roles": roles,
+		"content_chars": sum(lengths),
+		"max_message_chars": max(lengths) if lengths else 0,
+	}
+
+
+def _update_last_llm_diagnostics(**payload) -> None:
+	global LAST_LLM_DIAGNOSTICS
+	LAST_LLM_DIAGNOSTICS = dict(payload)
+
+
+def get_last_llm_diagnostics() -> dict:
+	return dict(LAST_LLM_DIAGNOSTICS)
+
+
 def _is_legacy_mistral_model(model_name: str | None) -> bool:
 	if not model_name:
 		return False
@@ -271,42 +348,142 @@ def _chunk_embedding_inputs(inputs, max_items=EMBED_MAX_ITEMS_PER_BATCH, max_cha
 	return batches
 
 
-def mistral_request(messages, model=None, max_tries=7, **kwargs):
+def mistral_request(messages, model=None, max_tries=None, **kwargs):
 	settings = get_llm_settings()
 	headers = _build_headers(settings)
-	request_timeout = kwargs.pop("timeout", 120)
+	request_label = str(kwargs.pop("request_label", "chat") or "chat")
+	default_timeout = _env_int("LLM_REQUEST_TIMEOUT", 35, minimum=5, maximum=300)
+	request_timeout = kwargs.pop("timeout", default_timeout)
+	if max_tries is None:
+		max_tries = _env_int("LLM_MAX_RETRIES", 3, minimum=1, maximum=7)
 	data = {
 		"model": _resolve_chat_model(model),
 		"messages": messages,
 		**kwargs,
 	}
-	max_delay = 20
+	message_summary = _summarize_messages(messages)
+	response_format = data.get("response_format", {})
+	try:
+		payload_json = json.dumps(data, ensure_ascii=False)
+		payload_bytes = len(payload_json.encode("utf-8"))
+	except Exception:
+		payload_bytes = 0
+	max_delay = _env_int("LLM_RETRY_MAX_DELAY", 8, minimum=1, maximum=60)
 	for tries in range(max_tries):
 		attempt = tries + 1
-		_log_request(f"聊天请求，第 {attempt}/{max_tries} 次，模型：{data['model']}")
+		_update_last_llm_diagnostics(
+			provider=settings.label,
+			model=data["model"],
+			attempt=attempt,
+			max_tries=max_tries,
+			timeout=request_timeout,
+			payload_bytes=payload_bytes,
+			message_count=message_summary["message_count"],
+			content_chars=message_summary["content_chars"],
+			max_message_chars=message_summary["max_message_chars"],
+			roles=message_summary["roles"],
+			response_format=response_format.get("type", "unknown") if isinstance(response_format, dict) else str(response_format),
+			max_tokens=data.get("max_tokens"),
+			request_label=request_label,
+			stage="requesting",
+		)
+		_log_request(f"{request_label} 请求，第 {attempt}/{max_tries} 次，模型：{data['model']}")
+		_log_request(
+			f"请求摘要：消息 {message_summary['message_count']} 条，内容 {message_summary['content_chars']} 字符，"
+			f"最长单条 {message_summary['max_message_chars']} 字符，请求体约 {payload_bytes} 字节"
+		)
 		try:
 			response = requests.post(_chat_url(), json=data, headers=headers, timeout=request_timeout)
 		except requests.Timeout as exc:
 			wait_time = min(max_delay, 2 ** attempt)
-			_log_request(f"聊天请求超时：{exc}，{wait_time} 秒后重试")
+			_update_last_llm_diagnostics(
+				provider=settings.label,
+				model=data["model"],
+				attempt=attempt,
+				max_tries=max_tries,
+				timeout=request_timeout,
+				payload_bytes=payload_bytes,
+				message_count=message_summary["message_count"],
+				content_chars=message_summary["content_chars"],
+				max_message_chars=message_summary["max_message_chars"],
+				roles=message_summary["roles"],
+				response_format=response_format.get("type", "unknown") if isinstance(response_format, dict) else str(response_format),
+				max_tokens=data.get("max_tokens"),
+				request_label=request_label,
+				stage="timeout",
+				error=str(exc),
+			)
+			_log_request(f"{request_label} 请求超时：{exc}，{wait_time} 秒后重试")
 			if tries < max_tries - 1:
 				time.sleep(wait_time)
 				continue
 			raise
 		except requests.RequestException as exc:
 			wait_time = min(max_delay, 2 ** attempt)
-			_log_request(f"聊天请求网络异常：{type(exc).__name__}: {exc}")
+			_update_last_llm_diagnostics(
+				provider=settings.label,
+				model=data["model"],
+				attempt=attempt,
+				max_tries=max_tries,
+				timeout=request_timeout,
+				payload_bytes=payload_bytes,
+				message_count=message_summary["message_count"],
+				content_chars=message_summary["content_chars"],
+				max_message_chars=message_summary["max_message_chars"],
+				roles=message_summary["roles"],
+				response_format=response_format.get("type", "unknown") if isinstance(response_format, dict) else str(response_format),
+				max_tokens=data.get("max_tokens"),
+				request_label=request_label,
+				stage="network_error",
+				error=f"{type(exc).__name__}: {exc}",
+			)
+			_log_request(f"{request_label} 请求网络异常：{type(exc).__name__}: {exc}")
 			if tries < max_tries - 1:
 				_log_request(f"{wait_time} 秒后重试")
 				time.sleep(wait_time)
 				continue
 			raise
 		if response.ok:
-			_log_request(f"聊天请求成功，状态码：{response.status_code}")
+			_update_last_llm_diagnostics(
+				provider=settings.label,
+				model=data["model"],
+				attempt=attempt,
+				max_tries=max_tries,
+				timeout=request_timeout,
+				payload_bytes=payload_bytes,
+				message_count=message_summary["message_count"],
+				content_chars=message_summary["content_chars"],
+				max_message_chars=message_summary["max_message_chars"],
+				roles=message_summary["roles"],
+				response_format=response_format.get("type", "unknown") if isinstance(response_format, dict) else str(response_format),
+				max_tokens=data.get("max_tokens"),
+				request_label=request_label,
+				stage="success",
+				status_code=response.status_code,
+			)
+			_log_request(f"{request_label} 请求成功，状态码：{response.status_code}")
 			break
 		status = response.status_code
 		preview = response.text[:300].replace("\n", " ")
-		_log_request(f"聊天请求失败，状态码：{status}，响应：{preview}")
+		_update_last_llm_diagnostics(
+			provider=settings.label,
+			model=data["model"],
+			attempt=attempt,
+			max_tries=max_tries,
+			timeout=request_timeout,
+			payload_bytes=payload_bytes,
+			message_count=message_summary["message_count"],
+			content_chars=message_summary["content_chars"],
+			max_message_chars=message_summary["max_message_chars"],
+			roles=message_summary["roles"],
+			response_format=response_format.get("type", "unknown") if isinstance(response_format, dict) else str(response_format),
+			max_tokens=data.get("max_tokens"),
+			request_label=request_label,
+			stage="http_error",
+			status_code=status,
+			error_preview=preview,
+		)
+		_log_request(f"{request_label} 请求失败，状态码：{status}，响应：{preview}")
 		if status in (429, 502, 503, 504, 520) and tries < max_tries - 1:
 			wait_time = min(max_delay, 2 ** (tries + 1))
 			_log_request(f"{wait_time} 秒后自动重试")
@@ -476,14 +653,17 @@ class MistralLLM:
 			prompt = _convert_system_to_user(prompt)
 
 		if schema:
-			format_data = {
-				"type": "json_schema",
-				"json_schema": {
-					"name": "json_object",
-					"schema": schema,
-					"strict": True,
-				},
-			}
+			if settings.provider in {"minimax", "openai_compatible", "custom"}:
+				format_data = {"type": "json_object"}
+			else:
+				format_data = {
+					"type": "json_schema",
+					"json_schema": {
+						"name": "json_object",
+						"schema": schema,
+						"strict": True,
+					},
+				}
 		else:
 			format_data = {"type": "json_object"} if return_json else {"type": "text"}
 
@@ -507,9 +687,10 @@ class MistralLLM:
 
 
 _DEFAULT_FALLBACK_PREF = [
-	"mistral-medium-2508",
-	"mistral-medium-2505",
 	"mistral-small-latest",
+	"mistral-medium-latest",
+	"mistral-medium-2505",
+	"mistral-medium-2508",
 	"mistral-large-2411",
 ]
 
@@ -518,7 +699,8 @@ class FallbackMistralLLM(MistralLLM):
 	def __init__(self, models=_DEFAULT_FALLBACK_PREF):
 		settings = get_llm_settings()
 		if settings.provider == "mistral":
-			resolved_models = list(models)
+			configured = settings.chat_model or _resolve_chat_model()
+			resolved_models = [configured] + [model for model in list(models) if model != configured]
 		else:
 			resolved_models = [settings.chat_model or _resolve_chat_model()]
 		super().__init__(resolved_models[0])
@@ -540,6 +722,8 @@ class FallbackMistralLLM(MistralLLM):
 				last_error = exc
 				if exc.response.status_code not in (429, 502, 503, 504, 520):
 					raise
+			except requests.RequestException as exc:
+				last_error = exc
 		if last_error is not None:
 			raise last_error
 		raise RuntimeError("All models failed")
@@ -548,3 +732,5 @@ class FallbackMistralLLM(MistralLLM):
 if __name__ == "__main__":
 	model = FallbackMistralLLM()
 	print(model.generate("Hello! What can you do?"))
+
+

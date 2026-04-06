@@ -1,26 +1,13 @@
 from __future__ import annotations
 
 import math
-import random
 from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from const import (
-    APPRAISAL_PROMPT,
-    APPRAISAL_SCHEMA,
-    EMOTION_HALF_LIFE,
-    EMOTION_APPRAISAL_CONTEXT_TEMPLATE,
-    EMOTION_MAP,
-    EMOTION_PROMPTS,
-    MODD_INTENSITY_FACTOR,
-    MOOD_HALF_LIFE,
-    PERSONALITY_INTENSITY_FACTOR,
-    SUMMARIZE_PERSONALITY,
-)
-from llm import FallbackMistralLLM
+from const import EMOTION_MAP, EMOTION_PROMPTS, MODD_INTENSITY_FACTOR, MOOD_HALF_LIFE, PERSONALITY_INTENSITY_FACTOR
 from safe_colored import Fore
-from utils import conversation_to_string, format_memories_to_string, num_to_str_sign, val_to_symbol_color
+from utils import num_to_str_sign, val_to_symbol_color
 
 
 def get_default_mood(openness, conscientious, extrovert, agreeable, neurotic):
@@ -31,17 +18,24 @@ def get_default_mood(openness, conscientious, extrovert, agreeable, neurotic):
 
 
 def summarize_personality(openness, conscientious, extrovert, agreeable, neurotic):
-    model = FallbackMistralLLM()
-    personality_str = "\n".join(
-        [
-            f"Openness: {round((openness + 1) * 50)}/100",
-            f"Conscientiousness: {round((conscientious + 1) * 50)}/100",
-            f"Extroversion: {round((extrovert + 1) * 50)}/100",
-            f"Agreeableness: {round((agreeable + 1) * 50)}/100",
-            f"Emotional Stability: {round((1 - neurotic) * 50)}/100",
-        ]
-    )
-    return model.generate(SUMMARIZE_PERSONALITY.format(personality_values=personality_str), temperature=0.1)
+    traits: list[str] = []
+    if extrovert >= 0.35:
+        traits.append("表达主动")
+    elif extrovert <= -0.2:
+        traits.append("表达克制")
+    if agreeable >= 0.45:
+        traits.append("整体温和")
+    elif agreeable <= -0.1:
+        traits.append("立场偏硬")
+    if openness >= 0.25:
+        traits.append("愿意接受新话题")
+    if conscientious >= 0.2:
+        traits.append("表达较有条理")
+    if neurotic >= 0.25:
+        traits.append("容易在细节上紧张")
+    elif neurotic <= 0:
+        traits.append("情绪相对稳定")
+    return "、".join(traits) if traits else "表达自然，语气平稳"
 
 
 class PersonalitySystem:
@@ -148,7 +142,7 @@ class RelationshipSystem:
         dominance_delta = 0.0
         if any(token in text for token in ("谢谢", "喜欢", "信任", "陪我", "晚安", "辛苦了")):
             friendliness_delta += 1.8
-        if any(token in text for token in ("讨厌", "闭嘴", "滚", "烦死了", "不喜欢你")):
+        if any(token in text for token in ("讨厌", "闭嘴", "滚", "烦死人", "不喜欢你")):
             friendliness_delta -= 3.2
         if any(token in text for token in ("命令", "立刻", "必须", "现在就")):
             dominance_delta += 1.2
@@ -183,31 +177,9 @@ class EmotionSystem:
             personality_system.neurotic,
         )
         self.mood = self.base_mood.copy()
-        self.model = FallbackMistralLLM()
 
     def appraisal(self, messages, memories, beliefs):
-        try:
-            context = EMOTION_APPRAISAL_CONTEXT_TEMPLATE.format(
-                conversation=conversation_to_string(messages[-4:]),
-                memories=format_memories_to_string(memories, "None"),
-                beliefs="\n".join(f"- {belief}" for belief in beliefs) if beliefs else "None",
-            )
-            data = self.model.generate(
-                APPRAISAL_PROMPT.format(context=context),
-                temperature=0.1,
-                return_json=True,
-                schema=APPRAISAL_SCHEMA,
-            )
-            items = data.get("appraisal", [])
-        except Exception:
-            return []
-        result = []
-        for item in items:
-            emotion = str(item.get("emotion", "") or "")
-            intensity = float(item.get("intensity", 0.0) or 0.0)
-            if emotion in EMOTION_MAP and intensity > 0:
-                result.append((emotion, max(0.0, min(1.0, intensity))))
-        return result[:4]
+        return []
 
     def set_emotion(self, pleasure=None, arousal=None, dominance=None):
         if pleasure is not None:
@@ -231,7 +203,7 @@ class EmotionSystem:
             delta += Emotion(0.035, 0.02, -0.005)
         if any(token in text for token in ("难过", "伤心", "失落", "低落", "沮丧", "委屈", "孤独", "累")):
             delta += Emotion(-0.03, -0.02, -0.015)
-        if any(token in text for token in ("讨厌你", "烦死了", "闭嘴", "滚", "不喜欢你", "讽刺", "恶心", "失望")):
+        if any(token in text for token in ("讨厌你", "烦死人", "闭嘴", "滚", "不喜欢你", "讽刺", "恶心", "失望")):
             delta += Emotion(-0.045, 0.03, 0.025)
         if delta.get_intensity() > 0:
             self.mood += delta

@@ -191,6 +191,37 @@ body { overflow: hidden; }
   font-size: 13px;
 }
 
+.preview-keyword-hint {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.keyword-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.keyword-choice input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: #ffc1c1;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.keyword-choice.is-selected {
+  background: rgba(244, 168, 168, 0.22);
+  border-color: rgba(255, 206, 206, 0.52);
+  color: #fff2f2;
+}
+
 .debug-evidence {
   margin-top: 14px;
   padding: 10px 12px;

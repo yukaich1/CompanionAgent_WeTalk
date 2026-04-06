@@ -1,6 +1,5 @@
 ﻿from __future__ import annotations
 
-import copy
 import json
 import shutil
 import traceback
@@ -11,12 +10,9 @@ from threading import Lock
 
 from flask import Flask, jsonify, render_template, request, send_from_directory
 from PIL import Image
+from llm import get_last_llm_diagnostics
+from rag.processing import DocumentProcessor
 from werkzeug.utils import secure_filename
-
-try:
-    from pypdf import PdfReader
-except Exception:
-    PdfReader = None
 
 from const import APP_DIR, NEW_MEMORY_STATE_PATH, NEW_PERSONA_STATE_PATH, SAVE_PATH
 from main import AIConfig, AISystem, PersonalityConfig, check_has_valid_key
@@ -28,6 +24,7 @@ UPLOAD_DIR = BASE_DIR / "uploads"
 AVATAR_DIR = UPLOAD_DIR / "avatars"
 ALLOWED_TEXT_SUFFIXES = {".txt", ".md", ".log", ".json", ".csv", ".pdf"}
 ALLOWED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+DOCUMENT_PROCESSOR = DocumentProcessor()
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 AVATAR_DIR.mkdir(parents=True, exist_ok=True)
@@ -80,29 +77,11 @@ def _ensure_avatar_square(file_path: Path) -> None:
 
 
 def _read_persona_text(file_path: Path, suffix: str) -> str:
-    suffix = (suffix or "").lower()
-    if suffix == ".pdf":
-        if PdfReader is None:
-            raise ValueError("当前环境未安装 PDF 解析依赖，请先安装 pypdf，或改为上传 txt / md / json 文件。")
-        try:
-            reader = PdfReader(str(file_path))
-            text = "\n".join((page.extract_text() or "").strip() for page in reader.pages)
-        except Exception as exc:
-            raise ValueError(f"PDF 读取失败：{exc}") from exc
-        text = text.strip()
-        if not text:
-            raise ValueError("这个 PDF 没有解析出可用文本，请更换为文本版资料或可复制文本的 PDF。")
-        return text
-
-    for encoding in ("utf-8", "utf-8-sig", "gb18030", "gbk"):
-        try:
-            text = file_path.read_text(encoding=encoding).strip()
-            if text:
-                return text
-        except UnicodeDecodeError:
-            continue
-    text = file_path.read_text(encoding="utf-8", errors="ignore").strip()
-    if not text:
+    try:
+        text = DOCUMENT_PROCESSOR.convert_path_to_markdown(file_path)
+    except Exception as exc:
+        raise ValueError(f"文件解析失败：{exc}") from exc
+    if not text.strip():
         raise ValueError("文件没有解析出可用文本，请确认不是空文件，或改用 txt / md / json / pdf。")
     return text
 
@@ -261,9 +240,8 @@ def _build_snapshot() -> dict:
     relation_state = _new_relation_snapshot()
     emotion_state = _current_mood_snapshot()
     persona_state = _new_persona_snapshot()
-    persona_identity = getattr(getattr(persona_state, "immutable_core", None), "identity", None)
     persona_metadata = getattr(persona_state, "metadata", {}) if persona_state is not None else {}
-    persona_keywords = list(persona_metadata.get("display_keywords", []) or [])
+    persona_keywords = _ai_system.persona_system.get_display_keywords(limit=8)
     persona_chunk_count = len(getattr(getattr(persona_state, "evidence_vault", None), "parent_chunks", []) or [])
     if not persona_chunk_count:
         persona_chunk_count = _ai_system.persona_system.chunk_count
@@ -291,20 +269,24 @@ def _build_snapshot() -> dict:
 
     return {
         "agent": {
-            "name": getattr(persona_identity, "name", "") or _ai_system.config.name,
+            "name": _ai_system.config.name,
             "avatarUrl": avatar_url,
             "mood": mood_name,
             "moodDescription": mood_description,
             "friendliness": friendliness,
             "affinity": affinity,
             "personaChunks": persona_chunk_count,
-            "keywords": persona_keywords or _ai_system.persona_system.get_display_keywords(),
+            "keywords": persona_keywords,
             "personaStatus": _ai_system.persona_system.get_status().dict(),
         },
         "settings": {
             "personaWebSearchEnabled": bool(_frontend_state.get("persona_web_search_enabled", True)),
         },
-        "debug": getattr(_ai_system, "last_debug_info", {}) or {},
+        "debug": {
+            **(getattr(_ai_system, "last_debug_info", {}) or {}),
+            "llm": get_last_llm_diagnostics(),
+            "personaSummary": getattr(getattr(_ai_system, "persona_system", None), "last_summary_debug", {}) or {},
+        },
         "history": history,
         "recentActivity": _frontend_state.get("recent_activity", []),
     }
@@ -315,6 +297,10 @@ def _json_ok(**payload):
 
 
 def _json_error(message: str, status: int = 400):
+    try:
+        print(f"[API:{request.path}] {status} {message}")
+    except Exception:
+        pass
     return jsonify({"ok": False, "error": message}), status
 
 
@@ -348,7 +334,7 @@ def api_chat():
         return _json_error("消息不能为空。")
 
     with _ai_lock:
-        backup = copy.deepcopy(_ai_system)
+        backup_snapshot = _ai_system._state_snapshot()
         try:
             response = _ai_system.send_message(message)
             _save_ai()
@@ -368,7 +354,7 @@ def api_chat():
                     degraded=True,
                 )
             except Exception:
-                globals()["_ai_system"] = backup
+                _ai_system._restore_snapshot(backup_snapshot)
                 return _json_error(f"发送失败：{exc}", 500)
 
         return _json_ok(
@@ -455,19 +441,35 @@ def api_persona_preview():
 @app.post("/api/persona/confirm")
 def api_persona_confirm():
     payload = request.get_json(force=True, silent=True) or {}
-    preview_id = (payload.get("previewId") or "").strip()
-    selected_keywords = payload.get("selectedKeywords") or []
+    preview_id = str(payload.get("previewId") or payload.get("preview_id") or "").strip()
+    selected_keywords = payload.get("selectedKeywords")
+    pending_previews = getattr(_ai_system.persona_system, "pending_previews", {}) or {}
+    if not preview_id and len(pending_previews) == 1:
+        preview_id = str(next(iter(pending_previews.keys())) or "").strip()
     if not preview_id:
         return _json_error("previewId 不能为空。")
+    if selected_keywords is not None and not isinstance(selected_keywords, list):
+        return _json_error("selectedKeywords 必须是数组。")
 
     with _ai_lock:
         try:
             result = _ai_system.persona_system.confirm_preview(preview_id, selected_keywords=selected_keywords)
         except Exception as exc:
+            try:
+                print(
+                    "[persona_confirm] failed",
+                    {
+                        "preview_id": preview_id,
+                        "selected_keywords_type": type(selected_keywords).__name__,
+                        "selected_keywords_count": len(selected_keywords) if isinstance(selected_keywords, list) else None,
+                        "pending_preview_ids": list((getattr(_ai_system.persona_system, "pending_previews", {}) or {}).keys()),
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                )
+            except Exception:
+                pass
             return _json_error(str(exc))
         preview = result["preview"]
-        if preview.persona_name and preview.persona_name != _ai_system.config.name:
-            _set_agent_name(preview.persona_name)
         _save_ai()
         _append_activity(_frontend_state, f"已确认写入 {preview.persona_name} 的人设预览")
         return _json_ok(count=result["count"], preview=preview.dict(), snapshot=_build_snapshot())

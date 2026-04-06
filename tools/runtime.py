@@ -5,7 +5,7 @@ from tools.tool_router import ToolExecutionReport, ToolRouter
 
 
 class ToolRuntime:
-    """薄执行层：只执行结构化工具意图，不再重复做硬编码判断。"""
+    """工具执行层：只执行结构化工具意图，不再重复做硬编码判断。"""
 
     def __init__(self, registry):
         self.registry = registry

@@ -1,7 +1,7 @@
 ﻿const state = {
   snapshot: null,
   preview: null,
-  selectedPreviewKeywords: [],
+  previewSelectedKeywords: [],
   avatarEditor: {
     image: null,
     objectUrl: null,
@@ -19,6 +19,7 @@
 const DEFAULT_AGENT_AVATAR = "/static/default-agent.svg";
 const DEFAULT_USER_AVATAR = "/static/default-user.svg";
 const AVATAR_VIEWPORT = { size: 280, output: 512 };
+const PREVIEW_KEYWORD_SELECTION_LIMIT = 8;
 
 const elements = {
   messages: document.getElementById("messages"),
@@ -53,6 +54,7 @@ const elements = {
   previewPanel: document.getElementById("preview-panel"),
   previewTitle: document.getElementById("preview-title"),
   previewBaseTemplate: document.getElementById("preview-base-template"),
+  previewKeywordHint: document.getElementById("preview-keyword-hint"),
   previewKeywords: document.getElementById("preview-keywords"),
   previewSnippets: document.getElementById("preview-snippets"),
   confirmPreview: document.getElementById("confirm-preview"),
@@ -121,12 +123,6 @@ function previewSourceLabel(source) {
     web: "联网资料",
   };
   return mapping[source] || source || "资料";
-}
-
-function normalizeKeywordSelection(preview) {
-  const selected = Array.isArray(preview?.selected_keywords) ? preview.selected_keywords : [];
-  const fallback = Array.isArray(preview?.summary?.display_keywords) ? preview.summary.display_keywords : [];
-  return [...new Set([...selected, ...fallback].filter(Boolean))].slice(0, 8);
 }
 
 function currentAgentName() {
@@ -219,6 +215,8 @@ function renderDebugEvidence(debugInfo) {
   const route = debugInfo?.routeType;
   const personaEvidence = Array.isArray(debugInfo?.personaEvidence) ? debugInfo.personaEvidence : [];
   const toolEvidence = Array.isArray(debugInfo?.toolEvidence) ? debugInfo.toolEvidence : [];
+  const thoughts = Array.isArray(debugInfo?.thoughts) ? debugInfo.thoughts : [];
+  const emotionReason = typeof debugInfo?.emotionReason === "string" ? debugInfo.emotionReason.trim() : "";
   const items = [];
 
   if (route) {
@@ -245,6 +243,22 @@ function renderDebugEvidence(debugInfo) {
       </div>
     `);
   }
+  if (thoughts.length) {
+    items.push(`
+      <div class="debug-evidence-item">
+        <strong>慢思考</strong>
+        <div>${thoughts.map((item) => escapeHtml(item)).join("<br>")}</div>
+      </div>
+    `);
+  }
+  if (emotionReason) {
+    items.push(`
+      <div class="debug-evidence-item">
+        <strong>情绪判断</strong>
+        <div>${escapeHtml(emotionReason)}</div>
+      </div>
+    `);
+  }
 
   if (!items.length) {
     elements.debugEvidence.classList.add("hidden");
@@ -257,59 +271,60 @@ function renderDebugEvidence(debugInfo) {
 }
 
 function renderPreviewKeywords(preview) {
-  const options = Array.isArray(preview?.keyword_options) ? preview.keyword_options : [];
-  state.selectedPreviewKeywords = normalizeKeywordSelection(preview);
-
-  if (!options.length) {
-    const keywords = preview.summary?.display_keywords || [];
-    elements.previewKeywords.innerHTML = keywords.length
-      ? keywords.map((keyword) => `<span class="tag">${escapeHtml(keyword)}</span>`).join("")
-      : `<span class="tag">等待提炼关键词</span>`;
+  const keywords = Array.isArray(preview?.summary?.display_keywords) ? preview.summary.display_keywords : [];
+  if (!keywords.length) {
+    state.previewSelectedKeywords = [];
+    elements.previewKeywords.innerHTML = `<span class="tag">等待分析师生成关键词</span>`;
+    if (elements.previewKeywordHint) {
+      elements.previewKeywordHint.textContent = "分析师生成关键词后，这里会出现可勾选的高权重标签。";
+    }
     return;
   }
 
-  const combinedOption = options[0] || { keywords: [] };
-  elements.previewKeywords.innerHTML = `
-    <div class="keyword-picker-head">
-      <strong>选择 8 个高权重关键词</strong>
-      <span id="preview-keyword-count" class="inline-meta">${state.selectedPreviewKeywords.length}/8</span>
-    </div>
-    <div class="keyword-groups">
-      <div class="keyword-group">
-        <div class="preview-source">综合提炼的角色关键词（中文词汇）</div>
-        <div class="keyword-choice-list">
-          ${combinedOption.keywords.map((keyword) => {
-            const checked = state.selectedPreviewKeywords.includes(keyword);
-            return `
-              <label class="keyword-choice ${checked ? "selected" : ""}">
-                <input type="checkbox" value="${escapeHtml(keyword)}" ${checked ? "checked" : ""}>
-                <span>${escapeHtml(keyword)}</span>
-              </label>
-            `;
-          }).join("")}
-        </div>
-      </div>
-    </div>
-  `;
+  if (!Array.isArray(state.previewSelectedKeywords) || !state.previewSelectedKeywords.length) {
+    state.previewSelectedKeywords = keywords.slice(0, PREVIEW_KEYWORD_SELECTION_LIMIT);
+  } else {
+    const available = new Set(keywords);
+    state.previewSelectedKeywords = state.previewSelectedKeywords.filter((keyword) => available.has(keyword));
+    if (!state.previewSelectedKeywords.length) {
+      state.previewSelectedKeywords = keywords.slice(0, PREVIEW_KEYWORD_SELECTION_LIMIT);
+    }
+  }
 
-  const countNode = document.getElementById("preview-keyword-count");
-  elements.previewKeywords.querySelectorAll('input[type="checkbox"]').forEach((input) => {
-    input.addEventListener("change", (event) => {
-      const keyword = event.target.value;
-      if (event.target.checked) {
-        if (state.selectedPreviewKeywords.length >= 8) {
-          showToast("最多只能选择 8 个关键词");
-          event.target.checked = false;
-          return;
-        }
-        state.selectedPreviewKeywords = [...new Set([...state.selectedPreviewKeywords, keyword])];
-      } else {
-        state.selectedPreviewKeywords = state.selectedPreviewKeywords.filter((item) => item !== keyword);
+  if (elements.previewKeywordHint) {
+    elements.previewKeywordHint.textContent = `请从分析师生成的关键词中选择 ${PREVIEW_KEYWORD_SELECTION_LIMIT} 个高权重标签（当前 ${state.previewSelectedKeywords.length}/${PREVIEW_KEYWORD_SELECTION_LIMIT}）。`;
+  }
+
+  elements.previewKeywords.innerHTML = keywords.map((keyword) => {
+    const checked = state.previewSelectedKeywords.includes(keyword) ? "checked" : "";
+    const selectedClass = checked ? "is-selected" : "";
+    return `
+      <label class="tag keyword-choice ${selectedClass}">
+        <input type="checkbox" value="${escapeHtml(keyword)}" ${checked}>
+        <span>${escapeHtml(keyword)}</span>
+      </label>
+    `;
+  }).join("");
+
+  elements.previewKeywords.querySelectorAll("input[type='checkbox']").forEach((input) => {
+    input.addEventListener("change", () => {
+      const selected = Array.from(
+        elements.previewKeywords.querySelectorAll("input[type='checkbox']:checked"),
+      )
+        .map((element) => element.value)
+        .filter(Boolean);
+      if (selected.length > PREVIEW_KEYWORD_SELECTION_LIMIT) {
+        input.checked = false;
+        showToast(`最多只能选择 ${PREVIEW_KEYWORD_SELECTION_LIMIT} 个关键词`);
+        return;
       }
-      countNode.textContent = `${state.selectedPreviewKeywords.length}/8`;
-      elements.previewKeywords.querySelectorAll(".keyword-choice").forEach((choice) => {
-        const inputNode = choice.querySelector("input");
-        choice.classList.toggle("selected", inputNode.checked);
+      state.previewSelectedKeywords = selected;
+      if (elements.previewKeywordHint) {
+        elements.previewKeywordHint.textContent = `请从分析师生成的关键词中选择 ${PREVIEW_KEYWORD_SELECTION_LIMIT} 个高权重标签（当前 ${state.previewSelectedKeywords.length}/${PREVIEW_KEYWORD_SELECTION_LIMIT}）。`;
+      }
+      elements.previewKeywords.querySelectorAll(".keyword-choice").forEach((label) => {
+        const checkbox = label.querySelector("input[type='checkbox']");
+        label.classList.toggle("is-selected", Boolean(checkbox?.checked));
       });
     });
   });
@@ -318,11 +333,14 @@ function renderPreviewKeywords(preview) {
 function renderPreview(preview) {
   state.preview = preview || null;
   if (!preview) {
+    state.previewSelectedKeywords = [];
     elements.previewPanel.classList.add("hidden");
     elements.previewBaseTemplate.innerHTML = "";
+    if (elements.previewKeywordHint) {
+      elements.previewKeywordHint.textContent = "";
+    }
     elements.previewKeywords.innerHTML = "";
     elements.previewSnippets.innerHTML = "";
-    state.selectedPreviewKeywords = [];
     return;
   }
 
@@ -684,20 +702,25 @@ async function previewPersona(options = {}) {
 }
 
 async function confirmPreview() {
-  if (!state.preview?.preview_id) {
+  const previewId = state.preview?.preview_id || state.preview?.previewId || "";
+  if (!previewId) {
     showToast("还没有可确认的预览");
     return;
   }
   setTypingStatus("正在写入人设库…");
   try {
-    const data = await requestJson("/api/persona/confirm", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        previewId: state.preview.preview_id,
-        selectedKeywords: state.selectedPreviewKeywords,
-      }),
-    });
+      console.debug("[persona_confirm] submit", {
+        previewId,
+        selectedKeywords: Array.isArray(state.previewSelectedKeywords) ? state.previewSelectedKeywords : [],
+      });
+      const data = await requestJson("/api/persona/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          previewId,
+          selectedKeywords: Array.isArray(state.previewSelectedKeywords) ? state.previewSelectedKeywords : [],
+        }),
+      });
     renderSnapshot(data.snapshot);
     renderPreview(null);
     elements.personaText.value = "";
