@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import html
 import re
 from urllib.parse import quote
@@ -7,19 +9,18 @@ import requests
 from tools.base import AgentTool, ToolSpec
 
 
-PIXIV_DOMAIN = "dic.pixiv.net"
-MOEGIRL_DOMAIN = "zh.moegirl.org.cn"
-WIKI_DOMAINS = [
+WIKI_SOURCES = [
     "zh.wikipedia.org",
     "ja.wikipedia.org",
     "en.wikipedia.org",
 ]
 
-SITE_SEARCH_DOMAINS = [
-    PIXIV_DOMAIN,
-    MOEGIRL_DOMAIN,
+PERSONA_SITE_SOURCES = [
+    "dic.pixiv.net",
+    "zh.moegirl.org.cn",
 ]
 
+DEFAULT_PERSONA_SOURCE_ORDER = [*PERSONA_SITE_SOURCES, *WIKI_SOURCES]
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Wetalk/1.0"
 DUCKDUCKGO_HTML_URL = "https://html.duckduckgo.com/html/"
 
@@ -31,7 +32,21 @@ def _clean_text(value: str) -> str:
     return text
 
 
-def _ddg_search(query: str, max_results: int, timeout: int):
+def _dedupe_snippets(items: list[dict], limit: int) -> list[dict]:
+    deduped: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for item in items:
+        key = (_clean_text(item.get("title", "")), _clean_text(item.get("text", "")))
+        if key in seen or not key[0] or not key[1]:
+            continue
+        seen.add(key)
+        deduped.append(item)
+        if len(deduped) >= limit:
+            break
+    return deduped
+
+
+def _ddg_search(query: str, max_results: int, timeout: int) -> list[dict]:
     try:
         response = requests.post(
             DUCKDUCKGO_HTML_URL,
@@ -50,18 +65,13 @@ def _ddg_search(query: str, max_results: int, timeout: int):
         re.S,
     )
 
-    results = []
-    seen = set()
+    results: list[dict] = []
     for match in pattern.finditer(page):
         title = _clean_text(match.group("title"))
         snippet = _clean_text(match.group("snippet"))
         href = html.unescape(match.group("href"))
         if not title or not snippet:
             continue
-        key = (title, snippet)
-        if key in seen:
-            continue
-        seen.add(key)
         results.append(
             {
                 "source": "duckduckgo",
@@ -72,40 +82,29 @@ def _ddg_search(query: str, max_results: int, timeout: int):
         )
         if len(results) >= max_results:
             break
-    return results
+    return _dedupe_snippets(results, max_results)
 
 
-def _site_ddg_search(domain: str, query: str, max_results: int, timeout: int):
+def _site_ddg_search(domain: str, query: str, max_results: int, timeout: int) -> list[dict]:
     scoped_query = f"site:{domain} {query}".strip()
     results = _ddg_search(scoped_query, max_results=max_results, timeout=timeout)
-    filtered = []
-    seen = set()
-    for item in results:
-        url = (item.get("url") or "").lower()
-        if domain not in url:
-            continue
-        key = (_clean_text(item.get("title", "")), _clean_text(item.get("text", "")))
-        if key in seen:
-            continue
-        seen.add(key)
-        filtered.append(
-            {
-                "source": domain,
-                "title": item.get("title", ""),
-                "text": item.get("text", ""),
-                "url": item.get("url", ""),
-            }
-        )
-        if len(filtered) >= max_results:
-            break
-    return filtered
+    filtered = [
+        {
+            "source": domain,
+            "title": item.get("title", ""),
+            "text": item.get("text", ""),
+            "url": item.get("url", ""),
+        }
+        for item in results
+        if domain in str(item.get("url", "")).lower()
+    ]
+    return _dedupe_snippets(filtered, max_results)
 
 
-def _wiki_search(search_terms, max_results: int, timeout: int):
-    snippets = []
-    seen_titles = set()
-
-    for wiki in WIKI_DOMAINS:
+def _wiki_search(search_terms: list[str], max_results: int, timeout: int, domains: list[str] | None = None) -> list[dict]:
+    snippets: list[dict] = []
+    seen_titles: set[tuple[str, str]] = set()
+    for wiki in list(domains or WIKI_SOURCES):
         for term in search_terms:
             try:
                 search_url = (
@@ -120,9 +119,10 @@ def _wiki_search(search_terms, max_results: int, timeout: int):
 
             for item in search_data.get("query", {}).get("search", []):
                 title = item.get("title", "").strip()
-                if not title or title in seen_titles:
+                key = (wiki, title)
+                if not title or key in seen_titles:
                     continue
-                seen_titles.add(title)
+                seen_titles.add(key)
                 try:
                     detail_url = (
                         f"https://{wiki}/w/api.php?action=query&prop=extracts"
@@ -131,23 +131,16 @@ def _wiki_search(search_terms, max_results: int, timeout: int):
                     detail_res = requests.get(detail_url, timeout=timeout, headers={"User-Agent": USER_AGENT})
                     detail_res.raise_for_status()
                     detail_data = detail_res.json()
-                    pages = detail_data.get("query", {}).get("pages", {})
-                    for page in pages.values():
-                        extract = (page.get("extract") or "").strip()
+                    for page in (detail_data.get("query", {}).get("pages", {}) or {}).values():
+                        extract = str(page.get("extract", "") or "").strip()
                         if extract:
-                            snippets.append(
-                                {
-                                    "source": wiki,
-                                    "title": title,
-                                    "text": extract[:1200],
-                                }
-                            )
+                            snippets.append({"source": wiki, "title": title, "text": extract[:1200]})
                             break
                 except Exception:
                     continue
                 if len(snippets) >= max_results:
-                    return snippets
-    return snippets
+                    return _dedupe_snippets(snippets, max_results)
+    return _dedupe_snippets(snippets, max_results)
 
 
 class WebSearchTool(AgentTool):
@@ -161,122 +154,59 @@ class WebSearchTool(AgentTool):
             "timeout": "int",
             "source_mode": "str",
         },
-        output_schema={
-            "snippets": [
-                {
-                    "source": "str",
-                    "title": "str",
-                    "text": "str",
-                }
-            ]
-        },
+        output_schema={"snippets": [{"source": "str", "title": "str", "text": "str"}]},
         tags=["reference", "persona", "search", "web"],
     )
 
-    def _ordered_persona_search(self, search_terms, max_results: int, timeout: int):
-        deduped = []
-        seen = set()
+    def _build_search_terms(self, persona_name: str, query: str) -> list[str]:
+        terms: list[str] = []
+        if persona_name:
+            terms.append(persona_name)
+        if persona_name and query:
+            terms.append(f"{persona_name} {query}")
+        if query and not persona_name:
+            terms.append(query)
+        return [term for term in terms if term]
 
-        for domain in (PIXIV_DOMAIN, MOEGIRL_DOMAIN):
-            domain_hits = []
-            for term in search_terms:
-                for item in _site_ddg_search(domain, term, max_results=max_results, timeout=timeout):
-                    key = (_clean_text(item.get("title", "")), _clean_text(item.get("text", "")))
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    domain_hits.append(item)
-                    if len(domain_hits) >= max_results:
-                        break
-                if len(domain_hits) >= max_results:
-                    break
-            if domain_hits:
-                deduped.extend(domain_hits[:max_results])
-                return deduped[:max_results]
-
-        wiki_hits = _wiki_search(search_terms, max_results=max_results, timeout=timeout)
-        for item in wiki_hits:
-            key = (_clean_text(item.get("title", "")), _clean_text(item.get("text", "")))
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(item)
-            if len(deduped) >= max_results:
+    def _persona_search(self, search_terms: list[str], max_results: int, timeout: int) -> list[dict]:
+        collected: list[dict] = []
+        for domain in DEFAULT_PERSONA_SOURCE_ORDER:
+            remaining = max_results - len(collected)
+            if remaining <= 0:
                 break
-        return deduped[:max_results]
+            if domain in WIKI_SOURCES:
+                collected.extend(_wiki_search(search_terms, max_results=remaining, timeout=timeout, domains=[domain]))
+            else:
+                for term in search_terms:
+                    collected.extend(_site_ddg_search(domain, term, max_results=remaining, timeout=timeout))
+                    collected = _dedupe_snippets(collected, max_results)
+                    if len(collected) >= max_results:
+                        break
+        return _dedupe_snippets(collected, max_results)
+
+    def _general_search(self, search_terms: list[str], max_results: int, timeout: int) -> list[dict]:
+        collected: list[dict] = []
+        collected.extend(_wiki_search(search_terms, max_results=max_results, timeout=timeout))
+        if len(collected) < max_results:
+            for term in search_terms:
+                remaining = max_results - len(collected)
+                if remaining <= 0:
+                    break
+                collected.extend(_ddg_search(term, max_results=remaining, timeout=timeout))
+                collected = _dedupe_snippets(collected, max_results)
+        return _dedupe_snippets(collected, max_results)
 
     def run(self, persona_name, query="", max_results=3, timeout=8, source_mode="general"):
         if not persona_name and not query:
             return {"snippets": []}
 
-        search_terms = []
-        if persona_name:
-            search_terms.append(persona_name)
-        if persona_name and query:
-            search_terms.append(f"{persona_name} {query}")
-        if query and not persona_name:
-            search_terms.append(query)
-
-        deduped = []
-        seen = set()
-        ddg_terms = []
-        if persona_name:
-            ddg_terms.append(persona_name)
-        if persona_name and query:
-            ddg_terms.append(f"{persona_name} {query}")
-        if query and not persona_name:
-            ddg_terms.append(query)
-        ddg_terms = [term for term in ddg_terms if term]
+        search_terms = self._build_search_terms(str(persona_name or "").strip(), str(query or "").strip())
+        if not search_terms:
+            return {"snippets": []}
 
         if source_mode == "persona_ordered":
-            ordered_hits = self._ordered_persona_search(ddg_terms or search_terms, max_results=max_results, timeout=timeout)
-            return {"snippets": ordered_hits[:max_results]}
-
-        if source_mode == "general" and query:
-            wiki_snippets = _wiki_search([query], max_results=max_results, timeout=timeout)
-            if wiki_snippets:
-                return {"snippets": wiki_snippets[:max_results]}
-
-        for term in ddg_terms:
-            for domain in SITE_SEARCH_DOMAINS:
-                more = _site_ddg_search(domain, term, max_results=max_results - len(deduped), timeout=timeout)
-                for item in more:
-                    key = (_clean_text(item.get("title", "")), _clean_text(item.get("text", "")))
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    deduped.append(item)
-                    if len(deduped) >= max_results:
-                        break
-                if len(deduped) >= max_results:
-                    break
-            if len(deduped) >= max_results:
-                break
-
-        if len(deduped) < max_results:
-            wiki_snippets = _wiki_search(search_terms, max_results=max_results - len(deduped), timeout=timeout)
-            for item in wiki_snippets:
-                key = (_clean_text(item.get("title", "")), _clean_text(item.get("text", "")))
-                if key in seen:
-                    continue
-                seen.add(key)
-                deduped.append(item)
-
-        if len(deduped) < max_results:
-            for term in ddg_terms:
-                more = _ddg_search(term, max_results=max_results - len(deduped), timeout=timeout)
-                for item in more:
-                    key = (_clean_text(item.get("title", "")), _clean_text(item.get("text", "")))
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    deduped.append(item)
-                    if len(deduped) >= max_results:
-                        break
-                if len(deduped) >= max_results:
-                    break
-
-        return {"snippets": deduped[:max_results]}
+            return {"snippets": self._persona_search(search_terms, max_results=max_results, timeout=timeout)}
+        return {"snippets": self._general_search(search_terms, max_results=max_results, timeout=timeout)}
 
 
 def fetch_character_reference_snippets(persona_name, query="", max_results=3, timeout=8):

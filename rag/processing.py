@@ -48,6 +48,13 @@ def extract_keywords(text: str, limit: int = 10) -> list[str]:
     return found
 
 
+def split_markdown_paragraphs(markdown_text: str) -> list[str]:
+    text = normalize_text(markdown_text)
+    if not text:
+        return []
+    return [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
+
+
 class DocumentProcessor:
     def __init__(self) -> None:
         self._markitdown = MarkItDown() if MarkItDown is not None else None
@@ -72,6 +79,60 @@ class DocumentProcessor:
             return ""
         heading = f"# {title.strip()}\n\n" if title.strip() else ""
         return heading + body
+
+    def extract_sections(self, markdown_text: str) -> list[dict]:
+        markdown_text = normalize_text(markdown_text)
+        if not markdown_text:
+            return []
+
+        sections: list[dict] = []
+        heading_stack: list[str] = []
+        buffer: list[str] = []
+        current_path: list[str] = []
+
+        def flush_section() -> None:
+            if not buffer:
+                return
+            body = "\n".join(buffer).strip()
+            buffer.clear()
+            if not body:
+                return
+            paragraphs = split_markdown_paragraphs(body)
+            title = current_path[-1] if current_path else ""
+            sections.append(
+                {
+                    "heading_path": list(current_path),
+                    "title": title,
+                    "body": body,
+                    "paragraphs": paragraphs,
+                }
+            )
+
+        for raw_line in markdown_text.splitlines():
+            line = raw_line.rstrip()
+            match = HEADING_RE.match(line.strip())
+            if match:
+                flush_section()
+                level = len(match.group(1))
+                title = match.group(2).strip()
+                heading_stack[:] = heading_stack[: level - 1]
+                if title:
+                    heading_stack.append(title)
+                current_path = list(heading_stack)
+                continue
+            buffer.append(line)
+
+        flush_section()
+        if not sections and markdown_text.strip():
+            sections.append(
+                {
+                    "heading_path": [],
+                    "title": "",
+                    "body": markdown_text.strip(),
+                    "paragraphs": split_markdown_paragraphs(markdown_text),
+                }
+            )
+        return sections
 
     def _fallback_path_to_markdown(self, path: Path) -> str:
         suffix = path.suffix.lower()
@@ -108,7 +169,15 @@ class MarkdownSmartChunker:
         self.overlap_tokens = overlap_tokens
         self.hard_limit_tokens = hard_limit_tokens
 
-    def chunk(self, markdown_text: str, document_id: str, source_label: str, source_type: str = "document", priority: float = 1.0, metadata: dict | None = None) -> list[dict]:
+    def chunk(
+        self,
+        markdown_text: str,
+        document_id: str,
+        source_label: str,
+        source_type: str = "document",
+        priority: float = 1.0,
+        metadata: dict | None = None,
+    ) -> list[dict]:
         metadata = dict(metadata or {})
         markdown_text = normalize_text(markdown_text)
         if not markdown_text:
@@ -118,22 +187,19 @@ class MarkdownSmartChunker:
         chunks: list[dict] = []
         current_units: list[dict] = []
         current_tokens = 0
-        overlap_seed: list[dict] = []
 
         for unit in units:
             unit_tokens = unit["token_count"]
             if current_units and current_tokens + unit_tokens > self.target_tokens:
                 chunks.append(self._build_chunk(document_id, source_label, source_type, current_units, priority, metadata))
-                overlap_seed = self._build_overlap_seed(current_units)
-                current_units = list(overlap_seed)
+                current_units = list(self._build_overlap_seed(current_units))
                 current_tokens = sum(item["token_count"] for item in current_units)
 
             if unit_tokens > self.hard_limit_tokens:
                 for split in self._split_large_unit(unit):
                     if current_units and current_tokens + split["token_count"] > self.target_tokens:
                         chunks.append(self._build_chunk(document_id, source_label, source_type, current_units, priority, metadata))
-                        overlap_seed = self._build_overlap_seed(current_units)
-                        current_units = list(overlap_seed)
+                        current_units = list(self._build_overlap_seed(current_units))
                         current_tokens = sum(item["token_count"] for item in current_units)
                     current_units.append(split)
                     current_tokens += split["token_count"]
@@ -146,7 +212,7 @@ class MarkdownSmartChunker:
             chunks.append(self._build_chunk(document_id, source_label, source_type, current_units, priority, metadata))
 
         unique_chunks: list[dict] = []
-        seen = set()
+        seen: set[str] = set()
         for chunk in chunks:
             key = chunk["content"]
             if key and key not in seen:
@@ -166,11 +232,7 @@ class MarkdownSmartChunker:
             paragraph_buffer.clear()
             if not text:
                 return
-            units.append({
-                "headings": list(heading_stack),
-                "content": text,
-                "token_count": estimate_tokens(text),
-            })
+            units.append({"headings": list(heading_stack), "content": text, "token_count": estimate_tokens(text)})
 
         for raw_line in markdown_text.splitlines():
             line = raw_line.rstrip()
@@ -249,4 +311,3 @@ class MarkdownSmartChunker:
             priority=priority,
             metadata=dict(metadata),
         ).dict()
-

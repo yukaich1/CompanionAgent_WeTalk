@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from collections import deque
 from datetime import datetime
@@ -11,7 +10,15 @@ from datetime import datetime
 import requests
 from pydantic import BaseModel, Field
 
-from ai_runtime_support import build_format_data, derive_relation_impact, derive_topic_tags, estimate_pending_signal, record_debug_info, split_tool_context_by_mode, thought_signal
+from ai_runtime_support import (
+    build_format_data,
+    derive_relation_impact,
+    derive_topic_tags,
+    estimate_pending_signal,
+    record_debug_info,
+    split_tool_context_by_mode,
+    thought_signal,
+)
 from ai_system_store import AISystemStore
 from config import DEFAULT_CONFIG
 from const import AI_SYSTEM_PROMPT, NEW_MEMORY_STATE_PATH, NEW_PERSONA_STATE_PATH, USER_TEMPLATE
@@ -20,6 +27,7 @@ from context.recall_deduplicator import RecallDeduplicator
 from diagnostics.conflict_log import ConflictLog
 from diagnostics.health_monitor import HealthMonitor
 from diagnostics.self_check import SelfCheck
+from knowledge.knowledge_source import PersonaRecallResult
 from knowledge.persona_rag_engine import PersonaRAGEngine
 from knowledge.persona_response_policy import PersonaResponsePolicy
 from knowledge.persona_system import CoreTrait, IdentityProfile, ParentChunk, PersonaState, PersonaSystem, PersonaSystemStore
@@ -69,7 +77,15 @@ class PersonalityConfig(BaseModel):
 class AIConfig(BaseModel):
     name: str = Field(default="Ireina")
     system_prompt: str = Field(default=AI_SYSTEM_PROMPT)
-    personality: PersonalityConfig = Field(default_factory=lambda: PersonalityConfig(open=0.35, conscientious=0.22, extrovert=0.18, agreeable=0.93, neurotic=-0.1))
+    personality: PersonalityConfig = Field(
+        default_factory=lambda: PersonalityConfig(
+            open=0.35,
+            conscientious=0.22,
+            extrovert=0.18,
+            agreeable=0.93,
+            neurotic=-0.1,
+        )
+    )
 
 
 class AISystem:
@@ -144,6 +160,7 @@ class AISystem:
             CoreTrait(feature=item, activation_trigger=[item], mandatory_behavior="", evidence_tags=[item])
             for item in list(getattr(persona, "display_keywords", []) or [])[:12]
         ]
+
         def _bounded_importance(raw_value: object) -> float:
             try:
                 score = float(raw_value if raw_value is not None else 0.5)
@@ -183,6 +200,7 @@ class AISystem:
             self.new_persona_state = self.new_persona_store.load()
         except Exception:
             self.new_persona_state = PersonaState()
+
         self.memory_system.set_state(self.new_memory_state)
         metadata = self.new_persona_state.metadata or {}
         if metadata:
@@ -192,26 +210,6 @@ class AISystem:
             if isinstance(metadata.get("base_template"), dict):
                 self.persona_system.base_template = metadata["base_template"]
         self.persona_rag_engine.set_persona_state(self.new_persona_state)
-        self._bootstrap_persona_from_uploads_if_needed()
-
-    def _bootstrap_persona_from_uploads_if_needed(self) -> None:
-        if self._persona_foundation_available():
-            return
-        uploads_dir = os.path.join(os.path.dirname(__file__), "uploads")
-        if not os.path.isdir(uploads_dir):
-            return
-        candidate_paths: list[str] = []
-        for root, _, files in os.walk(uploads_dir):
-            for name in files:
-                lower = name.lower()
-                if lower.endswith((".txt", ".md", ".markdown", ".json")) or lower.endswith("_txt"):
-                    candidate_paths.append(os.path.join(root, name))
-        for path in sorted(candidate_paths)[:6]:
-            try:
-                self.persona_system.load_file(path)
-            except Exception:
-                continue
-        self._sync_persona_state()
 
     def _save_architecture_state(self) -> None:
         self._sync_persona_state()
@@ -227,19 +225,19 @@ class AISystem:
 
     def _truncate_for_prompt(self, text, limit: int = 400) -> str:
         value = str(text or "").strip()
-        return value if len(value) <= limit else value[: max(0, limit - 1)].rstrip() + "…"
+        return value if len(value) <= limit else value[: max(0, limit - 1)].rstrip() + "..."
 
     def _is_self_intro_request(self, text: str) -> bool:
-        return bool(self.persona_policy.infer_grounding_needs(text).get("is_self_intro"))
+        return str(getattr(self.query_router.last_intent_result, "response_mode", "") or "") == "self_intro"
 
     def _requires_story_grounding(self, text: str) -> bool:
-        return bool(self.persona_policy.infer_grounding_needs(text).get("needs_story_grounding"))
+        return str(getattr(self.query_router.last_intent_result, "response_mode", "") or "") == "story"
 
     def _requires_persona_grounding(self, text: str) -> bool:
-        return bool(self.persona_policy.infer_grounding_needs(text).get("needs_persona_grounding"))
+        return str(getattr(self.query_router.last_intent_result, "response_mode", "") or "") in {"self_intro", "story", "persona_fact"}
 
     def _requires_external_grounding(self, text: str) -> bool:
-        return bool(self.persona_policy.infer_grounding_needs(text).get("needs_external_grounding"))
+        return str(getattr(self.query_router.last_intent_result, "response_mode", "") or "") == "external"
 
     def _has_tool_evidence(self, tool_context: str) -> bool:
         value = str(tool_context or "").strip()
@@ -247,66 +245,109 @@ class AISystem:
 
     def _persona_foundation_available(self) -> bool:
         persona = self.persona_system
-        return bool(getattr(persona, "character_voice_card", "").strip() or getattr(persona, "display_keywords", []) or any(payload for payload in (getattr(persona, "base_template", {}) or {}).values()))
-
-    def _build_self_intro_fallback(self) -> str:
-        response = self.persona_policy.build_self_intro_response()
-        if response:
-            return response
-        return self.persona_policy.generate_in_character_refusal(self, "self_intro")
-
-    def _grounded_persona_fallback(self) -> str:
-        return self.persona_policy.generate_in_character_refusal(self, "persona")
-
-    def _grounded_story_fallback(self) -> str:
-        return self.persona_policy.generate_in_character_refusal(self, "story")
-
-    def _grounded_external_fallback(self) -> str:
-        return self.persona_policy.generate_in_character_refusal(self, "external")
+        entries = list(getattr(persona, "entries", []) or [])
+        return bool(
+            entries
+            or getattr(persona, "character_voice_card", "").strip()
+            or getattr(persona, "display_keywords", [])
+            or any(payload for payload in (getattr(persona, "base_template", {}) or {}).values())
+        )
 
     def _run_pipeline(self, user_input: str):
         normalized_query = re.sub(r"\s+", " ", str(user_input or "").strip())
-        persona_recall = self.persona_rag_engine.recall(normalized_query)
         recent_conversation = conversation_to_string(self.get_message_history(False)[-6:])
-        route_decision = self.query_router.route(normalized_query, persona_recall, is_public=True, recent_conversation=recent_conversation, character_name=self.config.name)
-        intent_result = self.query_router.last_intent_result
-        if intent_result.tool_name == "weather":
-            params = dict(intent_result.tool_params or {})
-            if not params.get("location"):
-                location = self.query_router.extractor._extract_weather_location(normalized_query, recent_conversation)
-                if location:
-                    params["location"] = location
-                    params.setdefault("location_confidence", "low")
-                    params.setdefault("location_source", "context")
-            intent_result.tool_params = params
-        elif intent_result.tool_name == "web_search":
-            params = dict(intent_result.tool_params or {})
-            params["search_query"] = str(params.get("search_query") or normalized_query).strip()
-            intent_result.tool_params = params
+        intent_result = self.query_router.extractor.extract(
+            user_input=normalized_query,
+            recent_conversation=recent_conversation,
+            character_name=self.config.name,
+        )
+        recall_query_parts = [
+            str(intent_result.extracted_topic or "").strip(),
+            *[str(item or "").strip() for item in list(intent_result.extracted_keywords or [])],
+        ]
+        recall_query = " ".join(part for part in recall_query_parts if part).strip() or normalized_query
+
+        if str(getattr(intent_result, "recall_mode", "none") or "none") == "none":
+            persona_recall = PersonaRecallResult(
+                metadata={"query_plan": {"direct_query": "", "query_type": "external", "multi_queries": []}, "hits": [], "story_hits": []}
+            )
+        else:
+            persona_recall = self.persona_rag_engine.recall(recall_query)
+
+        route_decision = self.query_router.route(
+            normalized_query,
+            persona_recall,
+            is_public=True,
+            recent_conversation=recent_conversation,
+            character_name=self.config.name,
+            intent_result=intent_result,
+        )
         memory_result = self.memory_rag_engine.recall(normalized_query, self.new_memory_state)
         tool_report = self.tool_runtime.execute(intent_result=intent_result, persona_name=self.config.name)
         deduped = self.recall_deduplicator.dedup(persona_recall, memory_result)
         web_persona_context, web_reality_context = split_tool_context_by_mode(tool_report, route_decision)
-        assembled = self.context_assembler.assemble(route_type=route_decision.type, deduped=deduped, web_persona_context=web_persona_context, web_reality_context=web_reality_context)
+        assembled = self.context_assembler.assemble(
+            route_type=route_decision.type,
+            deduped=deduped,
+            web_persona_context=web_persona_context,
+            web_reality_context=web_reality_context,
+        )
         return route_decision, intent_result, tool_report, assembled, persona_recall
 
-    def _choose_response(self, user_input: str, thought_data: dict, grounding: dict, tool_context: str, persona_context: str, persona_recall) -> str:
-        persona_focus = str(self.persona_policy.persona_query_focus(str(user_input or "")) or "").strip()
-        story_hits = list((getattr(persona_recall, "metadata", {}) or {}).get("story_hits", []) or [])
-        if grounding["is_self_intro"]:
-            if not grounding["has_identity_reference"] and not str(persona_context or "").strip():
-                return self._build_self_intro_fallback()
-            return self.response_generator.self_intro(str(user_input or ""), thought_data, persona_context) or self._build_self_intro_fallback()
-        if grounding["needs_story_grounding"]:
-            if not story_hits:
-                return self._grounded_story_fallback()
-            return self.response_generator.story(str(user_input or ""), thought_data, story_hits[0]) or self._grounded_story_fallback()
-        if grounding["needs_external_grounding"]:
-            return self.response_generator.external(str(user_input or ""), thought_data, tool_context) or self._grounded_external_fallback()
-        if persona_focus in {"catchphrase", "likes", "dislikes", "personality"} and str(persona_context or "").strip():
-            return self.response_generator.persona_focus(str(user_input or ""), thought_data, persona_context, persona_focus) or self._grounded_persona_fallback()
+    def _build_grounding_contract(self, intent_result, persona_recall) -> dict:
+        response_mode = str(getattr(intent_result, "response_mode", "casual") or "casual")
+        persona_focus = str(getattr(intent_result, "persona_focus", "general") or "general")
+        return {
+            "response_mode": response_mode,
+            "persona_focus": persona_focus,
+            "has_identity_reference": self.persona_policy.has_identity_reference(),
+            "story_hits": list((getattr(persona_recall, "metadata", {}) or {}).get("story_hits", []) or []),
+            "response_contract": {
+                "self_intro": "只使用身份背景和命中的身份证据回答，不扩写没有证据的新经历。",
+                "story": "只使用一个命中的完整故事块回答，不合并多个故事，不补写新细节。",
+                "persona_fact": "只依据命中的角色资料回答喜好、性格、习惯或价值判断。",
+                "external": "只依据工具返回的现实信息回答，并用角色底色自然表达。",
+                "emotional": "优先接住用户情绪，保持角色说话方式，不强行塞设定。",
+                "value": "允许表达角色态度，但不要虚构具体角色经历作为论据。",
+                "casual": "自然聊天，延续角色底色，不补写没有根据的事实。",
+            }.get(response_mode, "自然回答，不虚构没有根据的事实。"),
+            "persona_focus_contract": {
+                "likes": "只回答明确喜欢或偏好的对象。",
+                "dislikes": "只回答明确讨厌或回避的对象。",
+                "catchphrase": "只回答说话习惯、口头禅或固定句式。",
+                "personality": "只回答已有证据支持的性格特征。",
+                "self_intro": "只回答基本身份。",
+            }.get(persona_focus, ""),
+        }
 
-        prompt_content = USER_TEMPLATE.format(**build_format_data(self, user_input, thought_data, self.memory_system.get_short_term_memories(), persona_context, tool_context, grounding=grounding))
+    def _choose_response(self, user_input: str, thought_data: dict, grounding: dict, tool_context: str, persona_context: str, persona_recall, intent_result) -> str:
+        response_mode = str(getattr(intent_result, "response_mode", "casual") or "casual").strip()
+        persona_focus = str(getattr(intent_result, "persona_focus", "general") or "general").strip()
+        story_hits = list((getattr(persona_recall, "metadata", {}) or {}).get("story_hits", []) or [])
+
+        if response_mode == "self_intro":
+            return self.response_generator.self_intro(str(user_input or ""), thought_data, persona_context)
+
+        if response_mode == "story":
+            return self.response_generator.story(str(user_input or ""), thought_data, story_hits[0] if story_hits else {})
+
+        if response_mode == "external":
+            return self.response_generator.external(str(user_input or ""), thought_data, tool_context)
+
+        if response_mode == "persona_fact":
+            return self.response_generator.persona_focus(str(user_input or ""), thought_data, persona_context, persona_focus)
+
+        prompt_content = USER_TEMPLATE.format(
+            **build_format_data(
+                self,
+                user_input,
+                thought_data,
+                self.memory_system.get_short_term_memories(),
+                persona_context,
+                tool_context,
+                grounding=grounding,
+            )
+        )
         request_history = self.response_generator._history_with_prompt(prompt_content)
         self.last_debug_info = {
             **(self.last_debug_info or {}),
@@ -318,7 +359,7 @@ class AISystem:
                 "historyMessages": len(request_history),
             },
         }
-        response = self.model.generate(request_history, temperature=0.3 if grounding["needs_story_grounding"] else 0.8, max_tokens=800)
+        response = self.model.generate(request_history, temperature=0.3 if response_mode == "story" else 0.8, max_tokens=1400)
         return self.response_generator.postprocess(response, user_input=str(user_input or ""))
 
     def send_message(self, user_input, return_json: bool = False, attached_image=None):
@@ -333,31 +374,31 @@ class AISystem:
         tool_context_for_turn = assembled_context.slots.get("web_reality_context") or assembled_context.slots.get("web_persona_context") or ""
         persona_context = assembled_context.slots.get("evidence_chunks", "")
         thought_persona_context = self.context_assembler.build_prompt_context(assembled_context)
-        grounding = self.persona_policy.infer_grounding_needs(str(user_input or ""), route_decision=route_decision, persona_recall=persona_recall, tool_report=tool_report)
-
-        if grounding["needs_story_grounding"] and not persona_context:
-            response = self._grounded_story_fallback()
-            self.buffer.add_message("assistant", response)
-            return response
-        if grounding["needs_external_grounding"] and not self._has_tool_evidence(tool_context_for_turn):
-            response = self._grounded_external_fallback()
-            self.buffer.add_message("assistant", response)
-            return response
-        if grounding["needs_persona_grounding"] and not persona_context and not (grounding["is_self_intro"] and grounding["has_identity_reference"]):
-            response = self._build_self_intro_fallback() if grounding["is_self_intro"] else self._grounded_persona_fallback()
-            self.buffer.add_message("assistant", response)
-            return response
+        grounding = self._build_grounding_contract(intent_result, persona_recall)
 
         pending_signal = estimate_pending_signal(str(user_input or ""))
         self.emotion_state_machine.queue_signal(pending_signal)
         memories, recalled_memories = self.memory_system.recall_memories(self.get_message_history(False))
-        thought_data = self.thought_system.think(messages=self.get_message_history(False), memories=memories, recalled_memories=recalled_memories, last_message=self.last_message, persona_context=thought_persona_context)
+        thought_data = self.thought_system.think(
+            messages=self.get_message_history(False),
+            memories=memories,
+            recalled_memories=recalled_memories,
+            last_message=self.last_message,
+            persona_context=thought_persona_context,
+        )
         self.emotion_state_machine.update_from_thought(thought_signal(thought_data))
-        record_debug_info(self, route_decision, assembled_context, tool_context_for_turn, thought_data=thought_data, local_precise_context="", local_story_context="")
+        record_debug_info(
+            self,
+            route_decision,
+            assembled_context,
+            thought_data=thought_data,
+            intent_result=intent_result,
+            persona_recall=persona_recall,
+        )
 
-        response = self._choose_response(user_input, thought_data, grounding, tool_context_for_turn, persona_context, persona_recall)
+        response = self._choose_response(user_input, thought_data, grounding, tool_context_for_turn, persona_context, persona_recall, intent_result)
         if not response:
-            response = self._grounded_persona_fallback()
+            response = "我现在没法把这件事说得太确定。"
 
         self.memory_writer.remember(
             self.new_memory_state,
@@ -383,7 +424,11 @@ class AISystem:
         return self.emotion_system.mood
 
     def get_beliefs(self):
-        semantic_notes = [record.content for record in getattr(self.new_memory_state, "semantic_records", []) if getattr(record, "scope", "") == "USER_SPECIFIC" and getattr(record, "content", "")]
+        semantic_notes = [
+            record.content
+            for record in getattr(self.new_memory_state, "semantic_records", [])
+            if getattr(record, "scope", "") == "USER_SPECIFIC" and getattr(record, "content", "")
+        ]
         return semantic_notes or self.memory_system.get_beliefs()
 
     def set_mood(self, pleasure=None, arousal=None, dominance=None) -> None:
@@ -468,5 +513,5 @@ def check_has_valid_key():
     except RuntimeError as exc:
         print(f"当前 LLM 配置不可用：{exc}")
         return False
-    print("验证成功！")
+    print("验证成功。")
     return True

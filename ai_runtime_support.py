@@ -10,10 +10,10 @@ from utils import format_date, format_memories_to_string, format_time, time_sinc
 
 
 def _clean_prompt_line(text: str, limit: int = 120) -> str:
-    value = re.sub(r"\s+", " ", str(text or "")).strip(" \t\r\n-:：；，。！？?()[]")
+    value = re.sub(r"\s+", " ", str(text or "")).strip(" \t\r\n-:：；，。！？[]")
     if not value:
         return ""
-    return value if len(value) <= limit else value[:limit].rstrip() + "…"
+    return value if len(value) <= limit else value[:limit].rstrip() + "..."
 
 
 def relation_metrics(system) -> dict:
@@ -50,7 +50,7 @@ def relation_state_summary(system) -> str:
     metrics = relation_metrics(system)
     affinity_level = _affinity_level_for_prompt(system)
     guidance = {
-        "stranger": "保持礼貌和适度距离，不主动越界到私密话题，不使用过分亲昵的称呼。",
+        "stranger": "保持礼貌和适度距离，不要过分越界到私密话题，也不要使用过分亲昵的称呼。",
         "familiar": "语气可以自然一些，允许轻微玩笑和熟悉感，但仍保留边界。",
         "close": "可以更柔和、更直接地表达在意与关心，允许自然流露亲近感。",
     }
@@ -64,13 +64,18 @@ def build_identity_reference(system) -> str:
     base_template = getattr(system.persona_system, "base_template", {}) or {}
     background = base_template.get("00_BACKGROUND", {}) if isinstance(base_template, dict) else {}
     profile = background.get("profile", {}) if isinstance(background, dict) else {}
+    experiences = background.get("key_experiences", []) if isinstance(background, dict) else []
     lines: list[str] = []
     if isinstance(profile, dict):
         for key, value in profile.items():
             clean = _clean_prompt_line(value, 80)
             if clean:
                 lines.append(f"{key}: {clean}")
-    return "\n".join(lines[:8]).strip()
+    for item in list(experiences or [])[:4]:
+        clean = _clean_prompt_line(item, 100)
+        if clean:
+            lines.append(f"经历: {clean}")
+    return "\n".join(lines[:10]).strip()
 
 
 def build_persona_injection_prompt(system, thought_data: dict) -> str:
@@ -102,50 +107,11 @@ def _select_evidence_prompt(persona_context: str, response_mode: str) -> str:
     blocks = _split_evidence_blocks(persona_context)
     if not blocks:
         return ""
-    if response_mode == "story_retelling":
+    if response_mode == "story":
         return blocks[0]
-    if response_mode == "persona_grounded":
+    if response_mode in {"persona_fact", "self_intro"}:
         return "\n\n".join(blocks[:3])
     return "\n\n".join(blocks[:4])
-
-
-def _response_mode_and_contract(system, content: str, grounding: dict | None, tool_context: str) -> tuple[str, str]:
-    grounding = grounding or {}
-    if grounding.get("needs_story_grounding"):
-        return (
-            "story_retelling",
-            "只选一条命中的故事证据，用第一人称直接讲，不比较，不合并，不补新事实。",
-        )
-    if grounding.get("needs_external_grounding") and str(tool_context or "").strip() not in {"", "None"}:
-        return (
-            "external_fact",
-            "只依据 tool_context 回答现实事实，可以保留角色语气，但不能补充额外知识或想象场景。",
-        )
-    if grounding.get("is_self_intro") and grounding.get("has_identity_reference"):
-        return (
-            "self_intro",
-            "只用身份背景信息回答‘你是谁’一类问题，不扩写未证实经历。",
-        )
-    if grounding.get("needs_persona_grounding"):
-        return (
-            "persona_grounded",
-            "只依据角色证据回答，不扩展 unsupported 的喜好、习惯、过去和故事。",
-        )
-    return ("free_chat", "自然地以角色口吻聊天；没有证据支撑的具体事实不要编。")
-
-
-def _persona_focus_contract(system, content: str, response_mode: str) -> tuple[str, str]:
-    if response_mode != "persona_grounded":
-        return "", ""
-    focus = str(system.persona_policy.persona_query_focus(content) or "").strip()
-    mapping = {
-        "likes": "只回答证据里明确支持的喜欢与偏好。",
-        "dislikes": "只回答证据里明确支持的讨厌、禁忌与回避。",
-        "catchphrase": "只回答证据支持的固定说法、习惯句式或口头禅。",
-        "personality": "只回答证据支持的性格与行为倾向。",
-        "self_intro": "只回答身份背景信息。",
-    }
-    return focus, mapping.get(focus, "")
 
 
 def recent_assistant_context(system) -> str:
@@ -167,8 +133,12 @@ def build_format_data(system, content, thought_data, memories, persona_context, 
     memories_str = format_memories_to_string(memories, "You do not have any stable memory about this user yet.")
     memories_str = system._truncate_for_prompt(memories_str, 420)
 
-    response_mode, response_contract = _response_mode_and_contract(system, content, grounding, tool_context)
-    persona_focus, persona_focus_contract = _persona_focus_contract(system, content, response_mode)
+    grounding = grounding or {}
+    response_mode = str(grounding.get("response_mode", "casual") or "casual")
+    persona_focus = str(grounding.get("persona_focus", "general") or "general")
+    response_contract = str(grounding.get("response_contract", "") or "").strip()
+    persona_focus_contract = str(grounding.get("persona_focus_contract", "") or "").strip()
+
     style_prompt = system._truncate_for_prompt(build_persona_injection_prompt(system, thought_data), 2200)
     identity_prompt = system._truncate_for_prompt(build_identity_reference(system), 700)
     evidence_prompt = system._truncate_for_prompt(_select_evidence_prompt(persona_context, response_mode), 2000)
@@ -185,14 +155,14 @@ def build_format_data(system, content, thought_data, memories, persona_context, 
         "evidence_prompt": evidence_prompt or "None",
         "tool_context": tool_context or "None",
         "response_mode": response_mode,
-        "response_contract": response_contract,
+        "response_contract": response_contract or "Reply naturally in character without inventing unsupported facts.",
         "persona_focus": persona_focus or "general",
         "persona_focus_contract": persona_focus_contract or "None",
         "recent_assistant_context": recent_assistant_context(system),
-        "story_grounding_required": "yes" if system._requires_story_grounding(content) else "no",
-        "story_answer_mode": "direct_retelling" if response_mode == "story_retelling" else "normal",
-        "persona_grounding_required": "yes" if system._requires_persona_grounding(content) else "no",
-        "external_grounding_required": "yes" if system._requires_external_grounding(content) else "no",
+        "story_grounding_required": "yes" if response_mode == "story" else "no",
+        "story_answer_mode": "direct_retelling" if response_mode == "story" else "normal",
+        "persona_grounding_required": "yes" if response_mode in {"self_intro", "persona_fact", "story"} else "no",
+        "external_grounding_required": "yes" if response_mode == "external" else "no",
         "tool_evidence_available": "yes" if system._has_tool_evidence(tool_context) else "no",
         "user_input": content,
         "emotion": thought_data.get("emotion", "平静"),
@@ -213,7 +183,7 @@ def build_format_data(system, content, thought_data, memories, persona_context, 
 def estimate_pending_signal(user_input) -> EmotionSignal:
     text = str(user_input or "")
     positive = ("喜欢", "谢谢", "开心", "高兴", "温暖", "信任", "陪我", "爱你")
-    negative = ("讨厌", "恶心", "讽刺", "失望", "生气", "恨", "无聊")
+    negative = ("讨厌", "恶心", "讽刺", "失望", "生气", "烦", "无聊")
     sad = ("难过", "伤心", "低落", "沮丧", "孤独", "疲惫", "痛苦")
     if any(token in text for token in negative):
         return EmotionSignal(mood="受伤", intensity=0.35, valence=-0.45)
@@ -245,7 +215,7 @@ def derive_relation_impact(signal: EmotionSignal) -> dict:
 
 def derive_topic_tags(user_input) -> list[str]:
     text = str(user_input or "")
-    tokens = [token for token in re.split(r"[\s，。！？；：、（）()\"'“”‘’]+", text) if 1 < len(token) <= 12]
+    tokens = [token for token in re.split(r"[\s，。！？；：、】【（）()\"'“”‘’]+", text) if 1 < len(token) <= 12]
     return tokens[:5]
 
 
@@ -287,27 +257,74 @@ def summarize_thoughts(system, thought_data, limit=5) -> list[str]:
     return lines
 
 
-def record_debug_info(system, route_decision, assembled_context, tool_context_for_turn, thought_data=None, local_precise_context="", local_story_context="") -> None:
-    persona_lines: list[str] = []
-    for source in (local_precise_context, local_story_context, assembled_context.slots.get("evidence_chunks", "")):
-        for line in summarize_debug_lines(system, source, limit=4):
-            if line not in persona_lines:
-                persona_lines.append(line)
-            if len(persona_lines) >= 4:
-                break
-        if len(persona_lines) >= 4:
-            break
+def _terminal_debug_report(system, payload: dict) -> None:
+    print("[DEBUG] ===== Turn Trace =====")
+    print(f"[DEBUG] route={payload.get('route')} intent={payload.get('intent')} tool={payload.get('tool')}")
+    print(f"[DEBUG] topic={payload.get('topic')} keywords={payload.get('keywords')}")
+    print(f"[DEBUG] recall_query={payload.get('recall_query')}")
+    print(f"[DEBUG] coverage={payload.get('coverage')} vector_unavailable={payload.get('vector_unavailable')}")
+    print(
+        f"[DEBUG] query_type={payload.get('query_type')} "
+        f"direct={payload.get('direct_query')} multi={payload.get('multi_query_count')}"
+    )
 
-    tool_lines: list[str] = []
-    for line in summarize_debug_lines(system, tool_context_for_turn, limit=4):
-        if line not in tool_lines:
-            tool_lines.append(line)
-        if len(tool_lines) >= 4:
-            break
+    hits = payload.get("hits") or []
+    print("[DEBUG] retrieved chunks:")
+    if hits:
+        for idx, hit in enumerate(hits[:6], start=1):
+            print(f"  [{idx}] score={hit.get('score')} title={hit.get('title')}")
+            print(f"      path={hit.get('path')}")
+            print(f"      text={hit.get('text')}")
+    else:
+        print("  (none)")
 
-    system.last_debug_info = {
-        "routeType": str(getattr(route_decision, "type", "") or ""),
-        "personaEvidence": persona_lines,
-        "toolEvidence": tool_lines,
-        "thoughts": summarize_thoughts(system, thought_data, limit=5),
+    thoughts = payload.get("thoughts") or []
+    print("[DEBUG] slow thoughts:")
+    if thoughts:
+        for line in thoughts:
+            print(f"  - {line}")
+    else:
+        print("  (none)")
+
+
+def record_debug_info(
+    system,
+    route_decision,
+    assembled_context,
+    local_precise_context="",
+    tool_report=None,
+    intent_result=None,
+    persona_recall=None,
+    thought_data=None,
+) -> None:
+    metadata = getattr(persona_recall, "metadata", {}) or {}
+    query_plan = metadata.get("query_plan", {}) or {}
+    raw_hits = metadata.get("hits", []) or []
+    hits = []
+    for hit in raw_hits[:6]:
+        chunk = hit.get("chunk", {}) if isinstance(hit, dict) else {}
+        hits.append(
+            {
+                "score": round(float(hit.get("score", 0.0)), 3) if isinstance(hit, dict) else 0.0,
+                "title": chunk.get("title", ""),
+                "path": chunk.get("path", ""),
+                "text": system._truncate_for_prompt(chunk.get("content", ""), 320),
+            }
+        )
+
+    payload = {
+        "route": getattr(route_decision, "type", None),
+        "intent": getattr(intent_result, "intent", None),
+        "tool": getattr(intent_result, "tool_name", "none") if intent_result else "none",
+        "topic": getattr(intent_result, "extracted_topic", ""),
+        "keywords": list(getattr(intent_result, "extracted_keywords", []) or []),
+        "recall_query": assembled_context.metadata.get("recall_query", ""),
+        "coverage": round(float(assembled_context.metadata.get("coverage_score", 0.0) or 0.0), 3),
+        "vector_unavailable": bool(metadata.get("vector_unavailable", False)),
+        "query_type": query_plan.get("query_type", ""),
+        "direct_query": query_plan.get("direct_query", ""),
+        "multi_query_count": len(query_plan.get("multi_queries", []) or []),
+        "hits": hits,
+        "thoughts": summarize_thoughts(system, thought_data or {}, limit=5),
     }
+    _terminal_debug_report(system, payload)

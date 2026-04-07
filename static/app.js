@@ -33,7 +33,6 @@ const elements = {
   agentAffinity: document.getElementById("agent-affinity"),
   personaCount: document.getElementById("persona-count"),
   keywordList: document.getElementById("keyword-list"),
-  debugEvidence: document.getElementById("debug-evidence"),
   activityList: document.getElementById("activity-list"),
   agentAvatar: document.getElementById("agent-avatar"),
   toast: document.getElementById("toast"),
@@ -210,73 +209,13 @@ function renderHistory(history) {
   elements.messages.scrollTop = elements.messages.scrollHeight;
 }
 
-function renderDebugEvidence(debugInfo) {
-  if (!elements.debugEvidence) return;
-  const route = debugInfo?.routeType;
-  const personaEvidence = Array.isArray(debugInfo?.personaEvidence) ? debugInfo.personaEvidence : [];
-  const toolEvidence = Array.isArray(debugInfo?.toolEvidence) ? debugInfo.toolEvidence : [];
-  const thoughts = Array.isArray(debugInfo?.thoughts) ? debugInfo.thoughts : [];
-  const emotionReason = typeof debugInfo?.emotionReason === "string" ? debugInfo.emotionReason.trim() : "";
-  const items = [];
-
-  if (route) {
-    items.push(`
-      <div class="debug-evidence-item">
-        <strong>本轮路由</strong>
-        <div>${escapeHtml(route)}</div>
-      </div>
-    `);
-  }
-  if (personaEvidence.length) {
-    items.push(`
-      <div class="debug-evidence-item">
-        <strong>人设证据</strong>
-        <div>${personaEvidence.map((item) => escapeHtml(item)).join("<br>")}</div>
-      </div>
-    `);
-  }
-  if (toolEvidence.length) {
-    items.push(`
-      <div class="debug-evidence-item">
-        <strong>工具证据</strong>
-        <div>${toolEvidence.map((item) => escapeHtml(item)).join("<br>")}</div>
-      </div>
-    `);
-  }
-  if (thoughts.length) {
-    items.push(`
-      <div class="debug-evidence-item">
-        <strong>慢思考</strong>
-        <div>${thoughts.map((item) => escapeHtml(item)).join("<br>")}</div>
-      </div>
-    `);
-  }
-  if (emotionReason) {
-    items.push(`
-      <div class="debug-evidence-item">
-        <strong>情绪判断</strong>
-        <div>${escapeHtml(emotionReason)}</div>
-      </div>
-    `);
-  }
-
-  if (!items.length) {
-    elements.debugEvidence.classList.add("hidden");
-    elements.debugEvidence.innerHTML = "";
-    return;
-  }
-
-  elements.debugEvidence.classList.remove("hidden");
-  elements.debugEvidence.innerHTML = items.join("");
-}
-
 function renderPreviewKeywords(preview) {
   const keywords = Array.isArray(preview?.summary?.display_keywords) ? preview.summary.display_keywords : [];
   if (!keywords.length) {
     state.previewSelectedKeywords = [];
     elements.previewKeywords.innerHTML = `<span class="tag">等待分析师生成关键词</span>`;
     if (elements.previewKeywordHint) {
-      elements.previewKeywordHint.textContent = "分析师生成关键词后，这里会出现可勾选的高权重标签。";
+      elements.previewKeywordHint.textContent = "这里只显示分析师 prompt 输出的关键词；如果为空，说明这次分析没有稳定产出可选标签。";
     }
     return;
   }
@@ -292,7 +231,7 @@ function renderPreviewKeywords(preview) {
   }
 
   if (elements.previewKeywordHint) {
-    elements.previewKeywordHint.textContent = `请从分析师生成的关键词中选择 ${PREVIEW_KEYWORD_SELECTION_LIMIT} 个高权重标签（当前 ${state.previewSelectedKeywords.length}/${PREVIEW_KEYWORD_SELECTION_LIMIT}）。`;
+    elements.previewKeywordHint.textContent = `请从分析师 prompt 生成的关键词中选择 ${PREVIEW_KEYWORD_SELECTION_LIMIT} 个高权重标签（当前 ${state.previewSelectedKeywords.length}/${PREVIEW_KEYWORD_SELECTION_LIMIT}）。`;
   }
 
   elements.previewKeywords.innerHTML = keywords.map((keyword) => {
@@ -320,7 +259,7 @@ function renderPreviewKeywords(preview) {
       }
       state.previewSelectedKeywords = selected;
       if (elements.previewKeywordHint) {
-        elements.previewKeywordHint.textContent = `请从分析师生成的关键词中选择 ${PREVIEW_KEYWORD_SELECTION_LIMIT} 个高权重标签（当前 ${state.previewSelectedKeywords.length}/${PREVIEW_KEYWORD_SELECTION_LIMIT}）。`;
+        elements.previewKeywordHint.textContent = `请从分析师 prompt 生成的关键词中选择 ${PREVIEW_KEYWORD_SELECTION_LIMIT} 个高权重标签（当前 ${state.previewSelectedKeywords.length}/${PREVIEW_KEYWORD_SELECTION_LIMIT}）。`;
       }
       elements.previewKeywords.querySelectorAll(".keyword-choice").forEach((label) => {
         const checkbox = label.querySelector("input[type='checkbox']");
@@ -385,7 +324,6 @@ function renderSnapshot(snapshot, options = {}) {
     ? agent.keywords.map((keyword) => `<span class="tag">${escapeHtml(keyword)}</span>`).join("")
     : `<span class="tag">等待学习</span>`;
 
-  renderDebugEvidence(snapshot.debug);
   elements.activityList.innerHTML = recentActivity.length
     ? recentActivity.map((item) => `
         <div class="activity-item">

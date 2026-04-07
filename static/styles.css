@@ -222,32 +222,6 @@ body { overflow: hidden; }
   color: #fff2f2;
 }
 
-.debug-evidence {
-  margin-top: 14px;
-  padding: 10px 12px;
-  border-radius: 14px;
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.08);
-  font-size: 12px;
-  line-height: 1.55;
-  color: rgba(255,255,255,0.78);
-  max-height: 128px;
-  overflow: auto;
-}
-
-.debug-evidence strong {
-  display: block;
-  margin-bottom: 6px;
-  color: rgba(255,255,255,0.92);
-  font-size: 12px;
-}
-
-.debug-evidence-item + .debug-evidence-item {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid rgba(255,255,255,0.06);
-}
-
 .activity-list {
   display: flex;
   flex-direction: column;

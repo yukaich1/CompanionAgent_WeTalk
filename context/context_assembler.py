@@ -5,8 +5,6 @@ from knowledge.knowledge_source import AssembledContext, DeduplicatedContext, Ro
 
 
 class ContextAssembler:
-    """标准 RAG 上下文组装器。"""
-
     def assemble(
         self,
         route_type: RouteType,

@@ -23,15 +23,6 @@ SOURCE_PRIORITY: dict[KnowledgeSource, int] = {
 }
 
 
-SOURCE_CONFIDENCE: dict[KnowledgeSource, float] = {
-    KnowledgeSource.USER_CANON: 1.0,
-    KnowledgeSource.WEB_PERSONA: 0.75,
-    KnowledgeSource.WEB_REALITY: 0.8,
-    KnowledgeSource.DIALOGUE_MEMORY: 0.5,
-    KnowledgeSource.MODEL_PRIOR: 0.3,
-}
-
-
 class SearchMode(str, Enum):
     NONE = "none"
     PERSONA_SEARCH = "persona_search"
@@ -52,7 +43,6 @@ class RouteDecision(BaseModel):
     type: RouteType
     web_search_mode: SearchMode = SearchMode.NONE
     search_hint: list[str] = Field(default_factory=list)
-    fallback: str | None = None
     info_domain: str | None = None
 
 

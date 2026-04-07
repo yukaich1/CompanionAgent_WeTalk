@@ -1,21 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from knowledge.knowledge_source import RouteDecision, RouteType, SearchMode
 from tools.intent_extractor import IntentExtractionResult, IntentExtractor
 
 
-INTENT_TO_ROUTE = {
-    "weather_query": (RouteType.E4, SearchMode.REALITY_SEARCH, "REALITY_FACTUAL"),
-    "web_search_query": (RouteType.E4, SearchMode.REALITY_SEARCH, "REALITY_FACTUAL"),
-    "emotional_interaction": (RouteType.E5, SearchMode.NONE, "RELATIONAL"),
-    "casual_chat": (RouteType.E1, SearchMode.NONE, "CHARACTER_INTERNAL"),
-    "help_request": (RouteType.E4, SearchMode.REALITY_SEARCH, "REALITY_FACTUAL"),
-}
-
-
 class QueryRouter:
-    """基于轻量意图提取结果决定本轮主路径。"""
-
     def __init__(self, extractor: IntentExtractor | None = None):
         self.extractor = extractor or IntentExtractor()
         self.last_intent_result = IntentExtractionResult()
@@ -33,41 +22,49 @@ class QueryRouter:
         is_public: bool,
         recent_conversation: str = "",
         character_name: str = "",
+        intent_result: IntentExtractionResult | None = None,
     ) -> RouteDecision:
         self._ensure_runtime_fields()
-        intent = self.extractor.extract(
+        intent = intent_result or self.extractor.extract(
             user_input=user_input,
             recent_conversation=recent_conversation,
             character_name=character_name,
         )
         self.last_intent_result = intent
-        coverage = float(getattr(persona_recall, "coverage_score", 0.0) or 0.0)
 
-        if intent.intent in INTENT_TO_ROUTE:
-            route_type, search_mode, domain = INTENT_TO_ROUTE[intent.intent]
-            if intent.intent != "help_request" or intent.needs_tool:
-                return RouteDecision(type=route_type, web_search_mode=search_mode, info_domain=domain)
+        search_hint = []
+        if intent.extracted_topic:
+            search_hint.append(intent.extracted_topic)
+        search_hint.extend(list(intent.extracted_keywords or []))
+        search_hint = [item for item in search_hint if str(item or "").strip()][:6]
 
-        if intent.intent == "value_judgment":
-            if intent.needs_tool:
-                return RouteDecision(type=RouteType.E3, web_search_mode=SearchMode.BOTH, info_domain="MIXED")
-            return RouteDecision(type=RouteType.E1, web_search_mode=SearchMode.NONE, info_domain="CHARACTER_INTERNAL")
+        if intent.response_mode == "external" or intent.needs_tool:
+            return RouteDecision(
+                type=RouteType.E4,
+                web_search_mode=SearchMode.REALITY_SEARCH,
+                info_domain="REALITY_FACTUAL",
+                search_hint=search_hint,
+            )
 
-        if coverage >= 0.7:
-            return RouteDecision(type=RouteType.E1, web_search_mode=SearchMode.NONE, info_domain="CHARACTER_INTERNAL")
+        if intent.response_mode == "emotional":
+            return RouteDecision(
+                type=RouteType.E5,
+                web_search_mode=SearchMode.NONE,
+                info_domain="RELATIONAL",
+                search_hint=search_hint,
+            )
 
-        if is_public:
+        if intent.response_mode in {"self_intro", "story", "persona_fact", "value"}:
             return RouteDecision(
                 type=RouteType.E2,
-                web_search_mode=SearchMode.PERSONA_SEARCH if intent.needs_tool else SearchMode.NONE,
-                search_hint=[intent.extracted_topic] if intent.extracted_topic else [],
+                web_search_mode=SearchMode.NONE,
                 info_domain="CHARACTER_INTERNAL",
+                search_hint=search_hint,
             )
 
         return RouteDecision(
-            type=RouteType.E2B,
+            type=RouteType.E1,
             web_search_mode=SearchMode.NONE,
-            search_hint=[intent.extracted_topic] if intent.extracted_topic else [],
-            fallback="conservative",
             info_domain="CHARACTER_INTERNAL",
+            search_hint=search_hint,
         )

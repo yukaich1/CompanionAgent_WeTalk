@@ -6,13 +6,6 @@ from reasoning.emotion_state_machine import Emotion
 
 
 class ThoughtSystem:
-    """轻量本地慢思考系统。
-
-    这里不再额外请求 LLM，而是保留一层可见的本地思考链：
-    情绪判断 -> 证据判断 -> 回答策略。
-    这样既能保留“慢思考过程”的可见性，也不会把超时风险再放大。
-    """
-
     def __init__(self, config, emotion_system, memory_system, relation_system, personality_system):
         self.config = config
         self.emotion_system = emotion_system
@@ -31,11 +24,11 @@ class ThoughtSystem:
     def _fallback_thought_output(self):
         return {
             "thoughts": [
-                {"content": "先把用户这句话的核心问题接住，不急着铺设定。"},
-                {"content": "如果资料里有明确证据，就顺着证据回答。"},
-                {"content": "如果现实信息没有查证，不强行下结论。"},
-                {"content": "保持第一人称，像角色本人，而不是分析报告。"},
-                {"content": "先自然回应，再考虑补充细节。"},
+                {"content": "先接住用户真正想问的东西，不绕远。"},
+                {"content": "如果有证据，就顺着证据说；没有证据，就别硬补。"},
+                {"content": "保持第一人称，像角色本人，而不是旁白。"},
+                {"content": "把重点说清楚，同时别把角色味道压扁。"},
+                {"content": "能自然展开时就展开，不必总缩成一句话。"},
             ],
             "possible_user_emotions": [],
             "emotion_mult": {},
@@ -71,13 +64,13 @@ class ThoughtSystem:
         evidence_status = "evidence-backed" if str(persona_context or "").strip() else "unsupported"
         thoughts = [
             "先顺着这句话的核心意思回答，不绕远。",
-            "如果角色资料里有依据，就让语气和立场自然落在那些依据上。",
-            "如果是现实信息问题，没有证据就别硬说。",
+            "如果这是现实信息问题，就只吃工具结果，不拿人设去乱补。",
+            "如果有角色证据，就让角色语气和立场自然落在证据上。",
             "保持第一人称，别把自己说成档案。",
-            "这次回答尽量短一点，先把最该说的说清楚。",
+            "先把重点说清楚，但别把表达压得太短。",
         ]
         if evidence_status == "evidence-backed":
-            thoughts[1] = "这句可以吃到现有人设证据，重点是让角色声音稳定落地。"
+            thoughts[2] = "这句能吃到现有证据，重点是让语气稳、内容准。"
         return [{"content": item} for item in thoughts]
 
     def think(self, messages, memories, recalled_memories, last_message, persona_context=""):

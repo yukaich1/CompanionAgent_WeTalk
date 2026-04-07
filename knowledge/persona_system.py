@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import hashlib
 import json
@@ -207,7 +207,7 @@ class PersonaSystem:
         for entry in self.entries:
             text = self._canonicalize_source_text(entry.get("content", "") or entry.get("text", ""))
             kind = entry.get("kind", entry.get("metadata", {}).get("kind", "source_chunk"))
-            if kind != "source_chunk":
+            if kind not in {"source_chunk", "story_chunk"}:
                 continue
             if not text or (kind, text) in seen:
                 continue

@@ -126,11 +126,11 @@ class RAGTool:
         lexical_scores = self._lexical_scores(lexical_index, filtered_chunks, retrieval_queries)
 
         hits: list[RAGSearchHit] = []
-        min_score = 0.10
+        min_score = 0.06
         if plan.query_type == "story":
-            min_score = 0.18
+            min_score = 0.08
         elif plan.query_type in {"persona", "character", "self_intro"}:
-            min_score = 0.12
+            min_score = 0.07
 
         for offset, chunk in enumerate(filtered_chunks):
             vector_score = float(vector_scores[offset])
@@ -255,24 +255,18 @@ class RAGTool:
                 keyword_bonus += 0.05
         keyword_bonus = min(keyword_bonus, 0.20)
 
-        path_bonus = 0.0
-        if plan.query_type in {"story", "persona", "character", "self_intro"} and chunk.kind == "source_chunk" and vector_score > 0.10:
-            path_bonus = 0.08
-        elif plan.query_type == "memory" and chunk.kind == "episodic_memory" and vector_score > 0.10:
-            path_bonus = 0.08
-
         vector_rank = int(np.argsort(-vector_scores).tolist().index(index)) + 1 if vector_scores.size else 999
         lexical_rank = int(np.argsort(-lexical_scores).tolist().index(index)) + 1 if lexical_scores.size else 999
         rrf_score = (1.0 / (60 + vector_rank)) + (1.0 / (60 + lexical_rank))
-        return max(0.0, 0.55 * vector_score + 0.25 * lexical_score + 6.0 * rrf_score + keyword_bonus + path_bonus)
+        return max(0.0, 0.58 * vector_score + 0.28 * lexical_score + 6.0 * rrf_score + keyword_bonus)
 
     def _infer_query_type(self, query: str) -> str:
         text = str(query or "")
-        if any(token in text for token in ("故事", "经历", "过去", "那一次", "旅行", "冒险", "讲讲")):
+        if any(token in text for token in ("故事", "经历", "过去", "那一次", "旅行", "冒险", "讲讲", "发生过")):
             return "story"
         if any(token in text for token in ("记得", "之前", "上次", "我们聊过", "还记得")):
             return "memory"
-        if any(token in text for token in ("你是谁", "自我介绍", "设定", "性格", "口头禅", "喜好", "讨厌", "过去")):
+        if any(token in text for token in ("你是谁", "自我介绍", "设定", "性格", "口头禅", "喜好", "讨厌")):
             return "persona"
         return "general"
 
@@ -280,7 +274,7 @@ class RAGTool:
         variants: list[str] = []
         keywords = extract_keywords(query, limit=5)
         if query_type == "story":
-            variants.extend([f"{query} 经历", f"{query} 故事"])
+            variants.extend([f"{query} 经历", f"{query} 事件", f"{query} 旅途故事"])
         elif query_type in {"persona", "character", "self_intro"}:
             variants.extend([f"{query} 角色设定", f"{query} 人物资料"])
         elif query_type == "memory":

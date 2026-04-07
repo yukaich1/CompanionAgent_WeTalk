@@ -75,7 +75,6 @@ class ParentChunk(BaseModel):
     topic_tags: list[str] = Field(default_factory=list)
     trait_tags: list[str] = Field(default_factory=list)
     importance_score: float = Field(default=0.5, ge=0.0, le=1.0)
-    deprecated: bool = False
     version: int = 1
     kind: str = "source_chunk"
     title: str = ""

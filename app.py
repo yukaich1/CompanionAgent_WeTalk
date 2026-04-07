@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import shutil
@@ -10,7 +10,6 @@ from threading import Lock
 
 from flask import Flask, jsonify, render_template, request, send_from_directory
 from PIL import Image
-from llm import get_last_llm_diagnostics
 from rag.processing import DocumentProcessor
 from werkzeug.utils import secure_filename
 
@@ -281,11 +280,6 @@ def _build_snapshot() -> dict:
         },
         "settings": {
             "personaWebSearchEnabled": bool(_frontend_state.get("persona_web_search_enabled", True)),
-        },
-        "debug": {
-            **(getattr(_ai_system, "last_debug_info", {}) or {}),
-            "llm": get_last_llm_diagnostics(),
-            "personaSummary": getattr(getattr(_ai_system, "persona_system", None), "last_summary_debug", {}) or {},
         },
         "history": history,
         "recentActivity": _frontend_state.get("recent_activity", []),

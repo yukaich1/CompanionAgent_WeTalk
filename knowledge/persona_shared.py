@@ -228,8 +228,6 @@ PERSONA_SUMMARY_SCHEMA = {
         },
         "character_voice_card": {"type": "string"},
         "display_keywords": {"type": "array", "items": {"type": "string"}},
-        "natural_reference_triggers": {"type": "array", "items": {"type": "string"}},
-        "story_chunks": {"type": "array"},
         "style_examples": {
             "type": "array",
             "items": {

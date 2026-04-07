@@ -1,9 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import uuid
 from datetime import datetime
 
 from knowledge.persona_shared import DISPLAY_KEYWORD_LIMIT, dedupe
+from llm import FallbackMistralLLM
 from persona_models import PersonaPreviewModel, PersonaSourceSnippet
 from tools import DEFAULT_TOOL_REGISTRY
 
@@ -11,16 +12,26 @@ from tools import DEFAULT_TOOL_REGISTRY
 class PersonaPreviewService:
     def __init__(self, system):
         self.system = system
+        self.model = FallbackMistralLLM()
 
     def build_persona_search_queries(self, persona_name: str, work_title: str = "") -> list[str]:
         anchor = " ".join(part for part in [work_title, persona_name] if part).strip() or persona_name.strip()
-        queries = [
-            f"{anchor} 角色设定 性格 说话方式 价值观",
-            f"{anchor} 人物介绍 角色资料",
-            f"{anchor} 经典台词 经历 故事",
-            anchor,
-        ]
-        return dedupe([query for query in queries if query], limit=4)
+        if not anchor:
+            return []
+        prompt = (
+            "你要为一个角色资料补充任务生成搜索查询词。\n"
+            "目标是查到这个角色本人的人物资料、说话方式、经历和角色介绍。\n"
+            "请输出 2 到 4 条简洁搜索词，每条一行，不要编号，不要解释。\n"
+            f"角色名：{persona_name or '未知'}\n"
+            f"作品名：{work_title or '未知'}\n"
+            f"锚点：{anchor}"
+        )
+        try:
+            result = str(self.model.generate(prompt, temperature=0.1, max_tokens=120) or "").strip()
+            queries = [line.strip("- ").strip() for line in result.splitlines() if line.strip()]
+        except Exception:
+            queries = [anchor]
+        return dedupe([query for query in queries if query], limit=4) or [anchor]
 
     def normalize_search_text(self, text: str) -> str:
         return "".join(str(text or "").lower().split())
@@ -31,7 +42,7 @@ class PersonaPreviewService:
         work_key = self.normalize_search_text(work_title)
         if persona_key and persona_key not in combined:
             return False
-        if work_key and work_key not in combined and not any(marker in combined for marker in ("角色", "人物", "设定", "经历", "台词", "性格")):
+        if work_key and work_key not in combined:
             return False
         return True
 
@@ -150,9 +161,7 @@ class PersonaPreviewService:
         source_text = "\n\n".join(f"[{snippet.source} | {snippet.title}]\n{snippet.text}" for snippet in snippets)
         summary = self.system._summarize_with_llm(source_text, source_label) or {}
         summary = self.system._summary_to_dict(summary)
-        fallback_keywords = self.system.ingest_service.selected_keyword_candidates(summary)
-        if fallback_keywords:
-            summary["display_keywords"] = fallback_keywords
+        summary["display_keywords"] = self.system.ingest_service.selected_keyword_candidates(summary)
 
         preview = PersonaPreviewModel(
             preview_id=str(uuid.uuid4()),
@@ -195,9 +204,6 @@ class PersonaPreviewService:
                 limit=min(DISPLAY_KEYWORD_LIMIT, 8),
             )
             summary_dict["display_keywords"] = normalized_keywords
-        elif not summary_dict.get("display_keywords"):
-            summary_dict["display_keywords"] = self.system.ingest_service.selected_keyword_candidates(summary_dict)
-
         count = 0
         applied_summary = False
         for snippet in preview.snippets:
