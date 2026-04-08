@@ -6,8 +6,7 @@ from datetime import datetime
 from memory.memory_rag_engine import MemoryRAGEngine
 from memory.memory_writer import MemoryWriter
 from memory.state_models import MemorySystemState
-from utils import format_timestamp, get_approx_time_ago_str
-from utils import conversation_to_string
+from utils import conversation_to_string, format_timestamp, get_approx_time_ago_str
 
 
 @dataclass
@@ -23,7 +22,7 @@ class MemoryView:
 
 
 class MemorySystem:
-    """Compatibility layer backed by the new memory state."""
+    """Coordinates working-memory views and long-term memory recall."""
 
     def __init__(self, config, state: MemorySystemState | None = None, writer: MemoryWriter | None = None, rag_engine: MemoryRAGEngine | None = None):
         self.config = config
@@ -65,16 +64,32 @@ class MemorySystem:
     def consolidate_memories(self):
         return None
 
-    def get_short_term_memories(self):
+    def get_recent_episodic_memories(self):
         recent = sorted(self.state.episodic_records, key=lambda item: item.created_at)[-8:]
         return [MemoryView(content=record.event_summary, timestamp=record.created_at) for record in recent]
 
-    def retrieve_long_term(self, query, top_k):
-        result = self.rag_engine.recall(query, self.state)
-        return [MemoryView(content=record.content) for record in result.episodic_records[:top_k]]
+    def build_working_memory(self, messages, limit: int = 6):
+        filtered = [message for message in list(messages or []) if message.get("role") in {"user", "assistant"}]
+        recent = filtered[-limit:]
+        views: list[MemoryView] = []
+        for message in recent:
+            role = "User" if message.get("role") == "user" else "Assistant"
+            content = message.get("content", "")
+            if isinstance(content, list):
+                text_parts = []
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text" and item.get("text"):
+                        text_parts.append(str(item.get("text", "")))
+                content = "\n".join(part for part in text_parts if part).strip()
+            else:
+                content = str(content or "").strip()
+            if not content:
+                continue
+            views.append(MemoryView(content=f"{role}: {content}"))
+        return views
 
     def recall_memories(self, messages):
         messages = [message for message in messages if message["role"] != "system"]
         query = conversation_to_string(messages[-3:])
         recalled_memories = self.recall(query)
-        return self.get_short_term_memories(), recalled_memories
+        return self.build_working_memory(messages), recalled_memories

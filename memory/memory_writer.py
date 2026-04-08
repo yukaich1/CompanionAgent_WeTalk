@@ -9,8 +9,19 @@ from memory.state_models import EpisodicRecord, MemorySystemState, RelationState
 
 
 class MemoryWriter:
-    def __init__(self, conflict_log: ConflictLog | None = None):
+    SEMANTIC_SUMMARY_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "content": {"type": "string"},
+            "domain": {"type": "string"},
+            "confidence": {"type": "number"},
+        },
+        "required": ["content", "domain", "confidence"],
+    }
+
+    def __init__(self, conflict_log: ConflictLog | None = None, llm=None):
         self.conflict_log = conflict_log or ConflictLog()
+        self.llm = llm
 
     def remember(
         self,
@@ -42,17 +53,77 @@ class MemoryWriter:
             return
 
         batch = unpromoted[:threshold]
+        semantic_payload = self._summarize_semantic_batch(batch)
         semantic = SemanticRecord(
             record_id=str(uuid.uuid4()),
             source_episode_ids=[record.record_id for record in batch],
-            content=" | ".join(record.event_summary for record in batch),
-            domain=batch[0].topic_tags[0] if batch[0].topic_tags else "user_relation",
-            confidence=min(0.5, DEFAULT_CONFIG.memory.semantic_confidence_step_cap * len(batch)),
+            content=semantic_payload["content"],
+            domain=semantic_payload["domain"],
+            confidence=semantic_payload["confidence"],
             last_updated_at=datetime.now(),
         )
         state.semantic_records.append(semantic)
         for record in batch:
             record.promoted = True
+
+    def _summarize_semantic_batch(self, batch) -> dict:
+        fallback = {
+            "content": " | ".join(record.event_summary for record in batch),
+            "domain": batch[0].topic_tags[0] if batch and batch[0].topic_tags else "user_relation",
+            "confidence": min(0.5, DEFAULT_CONFIG.memory.semantic_confidence_step_cap * len(batch)),
+        }
+        if self.llm is None or not batch:
+            return fallback
+
+        evidence_lines = []
+        for idx, record in enumerate(batch, start=1):
+            summary = str(record.event_summary or "").strip()
+            if not summary:
+                continue
+            tags = "、".join(list(record.topic_tags or [])[:5]) or "无"
+            evidence_lines.append(
+                f"{idx}. 事件: {summary}\n"
+                f"   标签: {tags}\n"
+                f"   情绪: {record.character_emotion}"
+            )
+        if not evidence_lines:
+            return fallback
+
+        prompt = f"""
+你要把几条已经发生过的对话事件，提炼成一条可长期保留的“稳定记忆摘要”。
+
+目标：
+1. 这不是简单拼接事件，而是提炼其中稳定、可持续、值得长期保留的部分。
+2. 优先保留用户偏好、关系变化、反复出现的话题、明确承诺、持续状态。
+3. 不要保留一次性细枝末节，不要重复原句，不要写成长篇流水账。
+4. 输出的 `content` 应该是一条自然、紧凑、可长期检索的中文记忆摘要。
+5. `domain` 只能是以下之一：`user_profile`、`user_preference`、`relationship`、`ongoing_topic`、`interaction_pattern`。
+6. `confidence` 在 0.0 到 1.0 之间，保守一些。
+7. 只输出 JSON。
+
+待提炼事件：
+{chr(10).join(evidence_lines)}
+""".strip()
+        try:
+            payload = self.llm.generate(
+                prompt,
+                return_json=True,
+                schema=self.SEMANTIC_SUMMARY_SCHEMA,
+                temperature=0.0,
+                max_tokens=220,
+            )
+            content = str((payload or {}).get("content", "") or "").strip()
+            domain = str((payload or {}).get("domain", "") or "").strip()
+            confidence = float((payload or {}).get("confidence", fallback["confidence"]) or fallback["confidence"])
+            if not content or not domain:
+                return fallback
+            return {
+                "content": content,
+                "domain": domain,
+                "confidence": max(0.0, min(1.0, confidence)),
+            }
+        except Exception:
+            return fallback
 
     def _update_relation_state(self, relation_state: RelationState, impact: dict[str, float]) -> None:
         cap = DEFAULT_CONFIG.memory.relation_delta_cap

@@ -1,0 +1,188 @@
+[
+  {
+    "case": "casual_greeting",
+    "message": "晚上好。",
+    "reply": "晚上。风有点凉，你那边呢？",
+    "route": "RouteType.E1",
+    "intent": "casual_chat",
+    "tool": "",
+    "coverage": 0.0,
+    "shared_session": false,
+    "checks": {
+      "intent_ok": true,
+      "tool_ok": true
+    },
+    "quality_checks": {
+      "format_ok": true,
+      "not_empty": true,
+      "casual_not_too_short": true
+    },
+    "ok": true
+  },
+  {
+    "case": "self_intro",
+    "message": "请自我介绍一下。",
+    "reply": "抱歉，我现在能提供的信息有限。如果你想了解某个具体的方面，比如我的兴趣或者某段经历，可以直接问——或许我能说得更清楚一些。",
+    "route": "RouteType.E2",
+    "intent": "character_related",
+    "tool": "",
+    "coverage": 0.0,
+    "shared_session": false,
+    "checks": {
+      "intent_ok": true,
+      "tool_ok": true
+    },
+    "quality_checks": {
+      "format_ok": true,
+      "not_empty": true,
+      "self_intro_not_dramatic": true
+    },
+    "ok": true
+  },
+  {
+    "case": "story_request",
+    "message": "请讲一个你的故事。",
+    "reply": "抱歉，我现在没有什么具体的故事可以分享给你。",
+    "route": "RouteType.E2",
+    "intent": "character_related",
+    "tool": "",
+    "coverage": 0.0,
+    "shared_session": false,
+    "checks": {
+      "intent_ok": true,
+      "tool_ok": true
+    },
+    "quality_checks": {
+      "format_ok": true,
+      "not_empty": true,
+      "story_no_fabrication_hint": true
+    },
+    "ok": true
+  },
+  {
+    "case": "weather",
+    "message": "请告诉我东京的天气如何？",
+    "reply": "东京现在天气挺好的，晴着呢。气温大概十度左右，风也不大，挺舒服的。",
+    "route": "RouteType.E4",
+    "intent": "weather_query",
+    "tool": "weather",
+    "coverage": 0.0,
+    "shared_session": false,
+    "checks": {
+      "intent_ok": true,
+      "tool_ok": true
+    },
+    "quality_checks": {
+      "format_ok": true,
+      "not_empty": true,
+      "external_first_person_clean": true
+    },
+    "ok": true
+  },
+  {
+    "case": "web_search",
+    "message": "请介绍一下牛顿第三定律。",
+    "reply": "牛顿第三定律的意思是说，只要两个物体有相互作用，它们之间就会出现一对大小相等、方向相反的力。比如你推墙，墙也在同一瞬间给你一个同样大的力，只是方向相反。这对力总是成双成对出现，没法单独存在。",
+    "route": "RouteType.E4",
+    "intent": "web_search_query",
+    "tool": "web_search",
+    "coverage": 0.0,
+    "shared_session": false,
+    "checks": {
+      "intent_ok": true,
+      "tool_ok": true
+    },
+    "quality_checks": {
+      "format_ok": true,
+      "not_empty": true,
+      "external_first_person_clean": true
+    },
+    "ok": true
+  },
+  {
+    "case": "emotional",
+    "message": "我今天有点难过。",
+    "reply": "难过的感觉有时候真的很沉，像是突然多了个说不清的重量，对不对？ 你想说说是什么让今天变得这么难挨吗？或者……就这么静静待会儿也没关系。",
+    "route": "RouteType.E5",
+    "intent": "emotional_interaction",
+    "tool": "",
+    "coverage": 0.0,
+    "shared_session": false,
+    "checks": {
+      "intent_ok": true,
+      "tool_ok": true
+    },
+    "quality_checks": {
+      "format_ok": true,
+      "not_empty": true,
+      "emotional_not_detached": true
+    },
+    "ok": true
+  },
+  {
+    "case": "sports_emotion_no_search",
+    "message": "我看比赛气坏了。",
+    "reply": "哎哟，看比赛都能气成这样，这场面得多让人来气啊？你是被哪个裁判吹黑了，还是哪支队伍玩得太不讲理？说说，我帮你骂两句出气。",
+    "route": "RouteType.E5",
+    "intent": "emotional_interaction",
+    "tool": "",
+    "coverage": 0.0,
+    "shared_session": false,
+    "checks": {
+      "intent_ok": true,
+      "tool_ok": true
+    },
+    "quality_checks": {
+      "format_ok": true,
+      "not_empty": true,
+      "no_accidental_search_reply": true,
+      "no_fake_self_anecdote": true
+    },
+    "ok": true
+  },
+  {
+    "case": "real_person_search",
+    "message": "你认识无畏契约职业选手Zmjjkk吗？",
+    "reply": "我刚查了下，Zmjjkk好像是EDG战队《无畏契约》分部的职业选手——不过具体到他个人的比赛数据、风格什么的，我手头只有俱乐部的大概介绍，还没找到更详细的资料。你想了解他哪方面的信息？我再帮你找找看。",
+    "route": "RouteType.E4",
+    "intent": "web_search_query",
+    "tool": "web_search",
+    "coverage": 0.0,
+    "shared_session": false,
+    "checks": {
+      "intent_ok": true,
+      "tool_ok": true
+    },
+    "quality_checks": {
+      "format_ok": true,
+      "not_empty": true,
+      "no_unrelated_expansion": true,
+      "external_first_person_clean": true
+    },
+    "ok": true
+  },
+  {
+    "case": "preview_roundtrip",
+    "preview_id": "af7daee0-d7db-4324-96ad-d99df855fd0b",
+    "committed_count": 1,
+    "keywords": [
+      "灰之魔女",
+      "旅人",
+      "爱财",
+      "腹黑",
+      "礼貌",
+      "好奇心强",
+      "自由优先",
+      "现实主义"
+    ],
+    "key_experiences": [
+      "她从小因为《妮可的冒险谭》而向往旅行，后来学习魔法"
+    ],
+    "quality_checks": {
+      "keywords_present": true,
+      "key_experiences_present": true,
+      "key_experiences_quality": true
+    },
+    "ok": true
+  }
+]

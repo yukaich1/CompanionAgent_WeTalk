@@ -4,10 +4,8 @@ from pydantic import BaseModel, Field
 
 
 class SlotBudgetConfig(BaseModel):
-    immutable_core: int = 300
     thought_output: int = 400
     web_persona_context: int = 300
-    slow_change_state: int = 150
     web_reality_context: int = 300
     semantic_memory: int = 200
     episodic_memory: int = 300

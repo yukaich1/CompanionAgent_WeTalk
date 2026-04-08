@@ -1,4 +1,4 @@
-"""AI 主编排模块。"""
+﻿"""AI 主编排模块。"""
 
 from __future__ import annotations
 
@@ -116,7 +116,7 @@ class AISystem:
         self.new_persona_store = PersonaSystemStore(NEW_PERSONA_STATE_PATH)
         self.new_memory_state = MemorySystemState()
         self.new_persona_state = PersonaState()
-        self.memory_writer = MemoryWriter(self.conflict_log)
+        self.memory_writer = MemoryWriter(self.conflict_log, self.model)
         self.memory_rag_engine = MemoryRAGEngine(self.model)
         self.memory_system = MemorySystem(self.config, self.new_memory_state, self.memory_writer, self.memory_rag_engine)
         self.thought_system = ThoughtSystem(self.config, self.emotion_system, self.memory_system, self.relation_system, self.personality_system)
@@ -132,6 +132,7 @@ class AISystem:
         self.last_message = None
         self.last_tick = datetime.now()
         self.last_debug_info = {}
+        self.recent_story_chunk_ids = deque(maxlen=6)
 
         self._load_architecture_state()
         self._sync_persona_state()
@@ -227,18 +228,6 @@ class AISystem:
         value = str(text or "").strip()
         return value if len(value) <= limit else value[: max(0, limit - 1)].rstrip() + "..."
 
-    def _is_self_intro_request(self, text: str) -> bool:
-        return str(getattr(self.query_router.last_intent_result, "response_mode", "") or "") == "self_intro"
-
-    def _requires_story_grounding(self, text: str) -> bool:
-        return str(getattr(self.query_router.last_intent_result, "response_mode", "") or "") == "story"
-
-    def _requires_persona_grounding(self, text: str) -> bool:
-        return str(getattr(self.query_router.last_intent_result, "response_mode", "") or "") in {"self_intro", "story", "persona_fact"}
-
-    def _requires_external_grounding(self, text: str) -> bool:
-        return str(getattr(self.query_router.last_intent_result, "response_mode", "") or "") == "external"
-
     def _has_tool_evidence(self, tool_context: str) -> bool:
         value = str(tool_context or "").strip()
         return bool(value and value != "None")
@@ -272,7 +261,18 @@ class AISystem:
                 metadata={"query_plan": {"direct_query": "", "query_type": "external", "multi_queries": []}, "hits": [], "story_hits": []}
             )
         else:
-            persona_recall = self.persona_rag_engine.recall(recall_query)
+            recall_mode = str(getattr(intent_result, "recall_mode", "none") or "none").strip()
+            preferred_query_type = "general"
+            if recall_mode == "story":
+                preferred_query_type = "story"
+            elif recall_mode in {"identity", "persona"}:
+                preferred_query_type = "persona"
+            exclude_chunk_ids = list(self.recent_story_chunk_ids) if str(getattr(intent_result, "response_mode", "") or "") == "story" else []
+            persona_recall = self.persona_rag_engine.recall(
+                recall_query,
+                exclude_chunk_ids=exclude_chunk_ids,
+                preferred_query_type=preferred_query_type,
+            )
 
         route_decision = self.query_router.route(
             normalized_query,
@@ -307,7 +307,7 @@ class AISystem:
                 "story": "只使用一个命中的完整故事块回答，不合并多个故事，不补写新细节。",
                 "persona_fact": "只依据命中的角色资料回答喜好、性格、习惯或价值判断。",
                 "external": "只依据工具返回的现实信息回答，并用角色底色自然表达。",
-                "emotional": "优先接住用户情绪，保持角色说话方式，不强行塞设定。",
+                "emotional": "优先接住用户情绪，保持角色说话方式，不强行填设定。",
                 "value": "允许表达角色态度，但不要虚构具体角色经历作为论据。",
                 "casual": "自然聊天，延续角色底色，不补写没有根据的事实。",
             }.get(response_mode, "自然回答，不虚构没有根据的事实。"),
@@ -326,23 +326,38 @@ class AISystem:
         story_hits = list((getattr(persona_recall, "metadata", {}) or {}).get("story_hits", []) or [])
 
         if response_mode == "self_intro":
+            if not grounding.get("has_identity_reference") and not str(persona_context or "").strip():
+                return self.response_generator._no_evidence_reply(str(user_input or ""), thought_data, mode="self_intro")
             return self.response_generator.self_intro(str(user_input or ""), thought_data, persona_context)
 
         if response_mode == "story":
+            if not story_hits:
+                return self.response_generator._no_evidence_reply(str(user_input or ""), thought_data, mode="story")
             return self.response_generator.story(str(user_input or ""), thought_data, story_hits[0] if story_hits else {})
 
         if response_mode == "external":
             return self.response_generator.external(str(user_input or ""), thought_data, tool_context)
 
-        if response_mode == "persona_fact":
-            return self.response_generator.persona_focus(str(user_input or ""), thought_data, persona_context, persona_focus)
+        if response_mode == "emotional":
+            return self.response_generator.emotional(str(user_input or ""), thought_data)
 
+        if response_mode == "persona_fact":
+            if not str(persona_context or "").strip():
+                return self.response_generator._no_evidence_reply(str(user_input or ""), thought_data, mode="persona")
+            return self.response_generator.persona_focus(str(user_input or ""), thought_data, persona_context, persona_focus)
+        if response_mode == "casual":
+            return self.response_generator.casual(
+                str(user_input or ""),
+                thought_data,
+                persona_context=persona_context,
+                tool_context=tool_context,
+            )
         prompt_content = USER_TEMPLATE.format(
             **build_format_data(
                 self,
                 user_input,
                 thought_data,
-                self.memory_system.get_short_term_memories(),
+                self.memory_system.build_working_memory(self.get_message_history(False)),
                 persona_context,
                 tool_context,
                 grounding=grounding,
@@ -359,7 +374,7 @@ class AISystem:
                 "historyMessages": len(request_history),
             },
         }
-        response = self.model.generate(request_history, temperature=0.3 if response_mode == "story" else 0.8, max_tokens=1400)
+        response = self.model.generate(request_history, temperature=0.3 if response_mode == "story" else 0.8, max_tokens=2000)
         return self.response_generator.postprocess(response, user_input=str(user_input or ""))
 
     def send_message(self, user_input, return_json: bool = False, attached_image=None):
@@ -399,6 +414,12 @@ class AISystem:
         response = self._choose_response(user_input, thought_data, grounding, tool_context_for_turn, persona_context, persona_recall, intent_result)
         if not response:
             response = "我现在没法把这件事说得太确定。"
+        if str(getattr(intent_result, "response_mode", "") or "") == "story":
+            story_hits = list((getattr(persona_recall, "metadata", {}) or {}).get("story_hits", []) or [])
+            if story_hits:
+                chunk_id = str(story_hits[0].get("chunk_id", "") or "").strip()
+                if chunk_id:
+                    self.recent_story_chunk_ids.append(chunk_id)
 
         self.memory_writer.remember(
             self.new_memory_state,
@@ -441,7 +462,7 @@ class AISystem:
         self.relation_system.set_relation(friendliness=friendliness, dominance=dominance)
 
     def get_memories(self):
-        return self.memory_system.get_short_term_memories()
+        return self.memory_system.build_working_memory(self.get_message_history(False))
 
     def consolidate_memories(self) -> None:
         self.memory_system.consolidate_memories()

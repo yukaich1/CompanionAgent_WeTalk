@@ -10,7 +10,7 @@ from utils import format_date, format_memories_to_string, format_time, time_sinc
 
 
 def _clean_prompt_line(text: str, limit: int = 120) -> str:
-    value = re.sub(r"\s+", " ", str(text or "")).strip(" \t\r\n-:：；，。！？[]")
+    value = re.sub(r"\s+", " ", str(text or "")).strip(" \t\r\n-:：；，。！？、\"'[]")
     if not value:
         return ""
     return value if len(value) <= limit else value[:limit].rstrip() + "..."
@@ -24,8 +24,9 @@ def relation_metrics(system) -> dict:
         familiarity = float(getattr(relation_state, "familiarity", 0.0) or 0.0)
     except Exception:
         trust = affection = familiarity = 0.0
-    warmth = max(0.0, min(1.0, (trust * 0.35) + (affection * 0.45) + (familiarity * 0.20)))
-    openness = max(0.0, min(1.0, (trust * 0.30) + (familiarity * 0.45) + (affection * 0.25)))
+
+    warmth = max(0.0, min(1.0, trust * 0.35 + affection * 0.45 + familiarity * 0.20))
+    openness = max(0.0, min(1.0, trust * 0.30 + familiarity * 0.45 + affection * 0.25))
     return {
         "trust": round(trust, 3),
         "affection": round(affection, 3),
@@ -130,7 +131,7 @@ def build_format_data(system, content, thought_data, memories, persona_context, 
     now = datetime.now()
     beliefs = system.get_beliefs()
     belief_str = "\n".join(f"- {belief}" for belief in beliefs) if beliefs else "None"
-    memories_str = format_memories_to_string(memories, "You do not have any stable memory about this user yet.")
+    memories_str = format_memories_to_string(memories, "你暂时还没有关于这位用户的稳定记忆。")
     memories_str = system._truncate_for_prompt(memories_str, 420)
 
     grounding = grounding or {}
@@ -145,7 +146,10 @@ def build_format_data(system, content, thought_data, memories, persona_context, 
     tool_context = system._truncate_for_prompt(tool_context, 900)
 
     user_emotions = thought_data.get("possible_user_emotions", []) or []
-    user_emotion_str = "The user appears to be feeling: " + ", ".join(user_emotions) if user_emotions else "The user does not show a strong explicit emotion."
+    if user_emotions:
+        user_emotion_str = "用户可能正在感受：" + "、".join(user_emotions)
+    else:
+        user_emotion_str = "用户没有表现出非常强烈的显性情绪。"
 
     return {
         "name": system.config.name,
@@ -155,7 +159,7 @@ def build_format_data(system, content, thought_data, memories, persona_context, 
         "evidence_prompt": evidence_prompt or "None",
         "tool_context": tool_context or "None",
         "response_mode": response_mode,
-        "response_contract": response_contract or "Reply naturally in character without inventing unsupported facts.",
+        "response_contract": response_contract or "自然回答，但不要编造没有证据的事实。",
         "persona_focus": persona_focus or "general",
         "persona_focus_contract": persona_focus_contract or "None",
         "recent_assistant_context": recent_assistant_context(system),
@@ -190,7 +194,7 @@ def estimate_pending_signal(user_input) -> EmotionSignal:
     if any(token in text for token in sad):
         return EmotionSignal(mood="关切", intensity=0.25, valence=-0.15)
     if any(token in text for token in positive):
-        return EmotionSignal(mood="愉快", intensity=0.2, valence=0.25)
+        return EmotionSignal(mood="愉快", intensity=0.20, valence=0.25)
     return EmotionSignal(mood="平静", intensity=0.05, valence=0.0)
 
 
@@ -215,7 +219,11 @@ def derive_relation_impact(signal: EmotionSignal) -> dict:
 
 def derive_topic_tags(user_input) -> list[str]:
     text = str(user_input or "")
-    tokens = [token for token in re.split(r"[\s，。！？；：、】【（）()\"'“”‘’]+", text) if 1 < len(token) <= 12]
+    tokens = [
+        token
+        for token in re.split(r"[\s，。！？；：、】【（）\"“”‘’]+", text)
+        if 1 < len(token) <= 12
+    ]
     return tokens[:5]
 
 
@@ -302,13 +310,14 @@ def record_debug_info(
     raw_hits = metadata.get("hits", []) or []
     hits = []
     for hit in raw_hits[:6]:
-        chunk = hit.get("chunk", {}) if isinstance(hit, dict) else {}
+        if not isinstance(hit, dict):
+            continue
         hits.append(
             {
-                "score": round(float(hit.get("score", 0.0)), 3) if isinstance(hit, dict) else 0.0,
-                "title": chunk.get("title", ""),
-                "path": chunk.get("path", ""),
-                "text": system._truncate_for_prompt(chunk.get("content", ""), 320),
+                "score": round(float(hit.get("score", 0.0) or 0.0), 3),
+                "title": str(hit.get("title", "") or ""),
+                "path": " > ".join(list(hit.get("markdown_path", []) or [])) or str(hit.get("source_label", "") or ""),
+                "text": system._truncate_for_prompt(hit.get("content", ""), 320),
             }
         )
 
@@ -318,13 +327,14 @@ def record_debug_info(
         "tool": getattr(intent_result, "tool_name", "none") if intent_result else "none",
         "topic": getattr(intent_result, "extracted_topic", ""),
         "keywords": list(getattr(intent_result, "extracted_keywords", []) or []),
-        "recall_query": assembled_context.metadata.get("recall_query", ""),
-        "coverage": round(float(assembled_context.metadata.get("coverage_score", 0.0) or 0.0), 3),
+        "recall_query": (system.last_debug_info or {}).get("recallQuery", ""),
+        "coverage": round(float(getattr(persona_recall, "coverage_score", 0.0) or 0.0), 3),
         "vector_unavailable": bool(metadata.get("vector_unavailable", False)),
-        "query_type": query_plan.get("query_type", ""),
-        "direct_query": query_plan.get("direct_query", ""),
-        "multi_query_count": len(query_plan.get("multi_queries", []) or []),
+        "query_type": str(query_plan.get("query_type", "") or ""),
+        "direct_query": str(query_plan.get("direct_query", "") or ""),
+        "multi_query_count": len(list(query_plan.get("multi_queries", []) or [])),
         "hits": hits,
-        "thoughts": summarize_thoughts(system, thought_data or {}, limit=5),
+        "thoughts": summarize_thoughts(system, thought_data),
     }
+    system.last_debug_info = {**(system.last_debug_info or {}), "turnTrace": payload}
     _terminal_debug_report(system, payload)

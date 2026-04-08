@@ -25,10 +25,10 @@ class ThoughtSystem:
         return {
             "thoughts": [
                 {"content": "先接住用户真正想问的东西，不绕远。"},
-                {"content": "如果有证据，就顺着证据说；没有证据，就别硬补。"},
+                {"content": "如果有证据，就沿着证据说；没有证据，就别硬补。"},
                 {"content": "保持第一人称，像角色本人，而不是旁白。"},
                 {"content": "把重点说清楚，同时别把角色味道压扁。"},
-                {"content": "能自然展开时就展开，不必总缩成一句话。"},
+                {"content": "证据足够时可以自然展开，不必总缩成一句话。"},
             ],
             "possible_user_emotions": [],
             "emotion_mult": {},
@@ -53,7 +53,7 @@ class ThoughtSystem:
 
     def _infer_character_emotion(self, text: str) -> tuple[str, str, int]:
         if any(token in text for token in ("谢谢", "喜欢你", "辛苦了", "抱抱", "晚安")):
-            return "Gratitude", "用户表达偏温和或亲近，回应可以自然柔和一些。", 4
+            return "Gratitude", "用户表达偏温和或亲近，回应可以更自然柔和一些。", 4
         if any(token in text for token in ("讨厌", "闭嘴", "滚", "烦死了", "恶心")):
             return "Reproach", "用户措辞带有明显攻击性，回应需要收敛并降温。", 5
         if any(token in text for token in ("难过", "伤心", "失落", "低落", "委屈")):
@@ -65,12 +65,12 @@ class ThoughtSystem:
         thoughts = [
             "先顺着这句话的核心意思回答，不绕远。",
             "如果这是现实信息问题，就只吃工具结果，不拿人设去乱补。",
-            "如果有角色证据，就让角色语气和立场自然落在证据上。",
+            "如果有角色证据，就让语气和立场自然落在证据上。",
             "保持第一人称，别把自己说成档案。",
             "先把重点说清楚，但别把表达压得太短。",
         ]
         if evidence_status == "evidence-backed":
-            thoughts[2] = "这句能吃到现有证据，重点是让语气稳、内容准。"
+            thoughts[2] = "这句可以吃到现有证据，重点是让角色语气稳定落地。"
         return [{"content": item} for item in thoughts]
 
     def think(self, messages, memories, recalled_memories, last_message, persona_context=""):

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import shutil
@@ -340,7 +340,7 @@ def api_chat():
                 history = _ai_system.get_message_history(False)
                 if history and history[-1].get("role") != "assistant":
                     _ai_system.buffer.add_message("assistant", fallback_reply)
-                _append_activity(_frontend_state, f"{_ai_system.config.name} 的一轮对话未完整完成")
+                _append_activity(_frontend_state, f"{_ai_system.config.name} 鐨勪竴杞璇濇湭瀹屾暣瀹屾垚")
                 _save_ai()
                 return _json_ok(
                     assistant={"content": fallback_reply, "bubbles": _split_bubbles(fallback_reply)},
@@ -349,7 +349,7 @@ def api_chat():
                 )
             except Exception:
                 _ai_system._restore_snapshot(backup_snapshot)
-                return _json_error(f"发送失败：{exc}", 500)
+                return _json_error(f"鍙戦€佸け璐ワ細{exc}", 500)
 
         return _json_ok(
             assistant={"content": response, "bubbles": _split_bubbles(response)},
@@ -403,7 +403,7 @@ def api_persona_text():
             )
         except Exception as exc:
             return _json_error(str(exc))
-        _append_activity(_frontend_state, f"已根据文本资料生成 {persona_name} 的待确认预览")
+        _append_activity(_frontend_state, f"宸叉牴鎹枃鏈祫鏂欑敓鎴?{persona_name} 鐨勫緟纭棰勮")
         return _json_ok(preview=preview.dict(), snapshot=_build_snapshot())
 
 
@@ -428,7 +428,7 @@ def api_persona_preview():
             )
         except Exception as exc:
             return _json_error(str(exc))
-        _append_activity(_frontend_state, f"已生成 {(persona_name or _ai_system.config.name)} 的待确认预览")
+        _append_activity(_frontend_state, f"宸茬敓鎴?{(persona_name or _ai_system.config.name)} 鐨勫緟纭棰勮")
         return _json_ok(preview=preview.dict(), snapshot=_build_snapshot())
 
 
@@ -463,12 +463,12 @@ def api_persona_confirm():
             except Exception:
                 pass
             return _json_error(str(exc))
-        preview = result["preview"]
+        preview = result.get("preview") or {}
+        persona_name = str(preview.get("persona_name") or _ai_system.config.name or "").strip()
+        count = int(result.get("committed_count", result.get("count", 0)) or 0)
         _save_ai()
-        _append_activity(_frontend_state, f"已确认写入 {preview.persona_name} 的人设预览")
-        return _json_ok(count=result["count"], preview=preview.dict(), snapshot=_build_snapshot())
-
-
+        _append_activity(_frontend_state, f"已确认写入 {persona_name} 的人设预览")
+        return _json_ok(count=count, preview=preview, snapshot=_build_snapshot())
 @app.post("/api/persona/file")
 def api_persona_file():
     files = [item for item in request.files.getlist("file") if item and item.filename]

@@ -32,18 +32,23 @@ class PersonaRAGEngine:
             seen_ids.add(chunk.chunk_id)
         return entries
 
-    def recall(self, query: str) -> PersonaRecallResult:
+    def recall(self, query: str, exclude_chunk_ids: list[str] | None = None, preferred_query_type: str = "") -> PersonaRecallResult:
         query = str(query or "").strip()
         if not query:
             return PersonaRecallResult()
+        excluded = {str(item or "").strip() for item in list(exclude_chunk_ids or []) if str(item or "").strip()}
 
-        plan = self.rag.plan_query(query)
+        plan = self.rag.plan_query(query, query_type=preferred_query_type or "")
         query_type = plan.query_type or "general"
 
         if query_type == "story":
             primary_entries = self._entries({"story_chunk"})
             result = self.rag.search(query, primary_entries, top_k=3, query_type="story", enable_hyde=False) if primary_entries else None
             hits = list(result.hits if result is not None else [])
+            if excluded:
+                filtered_hits = [hit for hit in hits if str(hit.chunk_id or "") not in excluded]
+                if filtered_hits:
+                    hits = filtered_hits
             if not hits:
                 return PersonaRecallResult(
                     integrated_context="",
@@ -68,10 +73,12 @@ class PersonaRAGEngine:
                 "source_label": str(top_hit.source_label or ""),
                 "chunk_id": str(top_hit.chunk_id or ""),
             }
+            displayed_hits = hits[:1]
             metadata = {
                 "query_plan": result.query_plan.model_dump() if hasattr(result.query_plan, "model_dump") else result.query_plan.dict(),
-                "hitKinds": [str(hit.metadata.get("kind", "")) for hit in hits],
+                "hitKinds": [str(hit.metadata.get("kind", "")) for hit in displayed_hits],
                 "vector_unavailable": bool(result.metadata.get("vector_unavailable", False)),
+                "candidate_hit_count": len(hits),
                 "hits": [
                     {
                         "chunk_id": str(hit.chunk_id or ""),
@@ -84,7 +91,7 @@ class PersonaRAGEngine:
                         "lexical_score": round(float(hit.lexical_score or 0.0), 4),
                         "content": str(hit.content or "")[:320],
                     }
-                    for hit in hits
+                    for hit in displayed_hits
                 ],
                 "story_hits": [story_payload],
             }

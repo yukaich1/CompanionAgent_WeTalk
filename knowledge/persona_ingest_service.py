@@ -1,12 +1,20 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
 import os
+import re
 from datetime import datetime
 
 from pydantic import BaseModel, Field
 
 from knowledge.persona_shared import DISPLAY_KEYWORD_LIMIT, PERSONA_SUMMARY_SCHEMA, dedupe
+from knowledge.persona_summary_refiners import (
+    build_background_extraction_prompt,
+    build_display_keywords_prompt,
+    build_key_experience_selection_prompt,
+    build_keyword_selection_prompt,
+)
+from knowledge.story_segmentation import segment_story_section
 from llm import MistralEmbeddingCapacityError, MistralLLM, get_llm_settings
 from persona_prompting import build_persona_summary_prompt
 from rag.models import RAGChunk
@@ -24,34 +32,42 @@ class StorySectionModel(BaseModel):
     story_units: list[StoryUnitModel] = Field(default_factory=list)
 
 
-STORY_SECTION_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "section_type": {"type": "string"},
-        "story_units": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string"},
-                    "paragraph_ids": {"type": "array", "items": {"type": "integer"}},
-                },
-                "required": ["title", "paragraph_ids"],
-            },
-        },
-    },
-    "required": ["section_type", "story_units"],
-}
-
 KEYWORD_CANDIDATE_SCHEMA = {
     "type": "object",
     "properties": {
-        "keywords": {
-            "type": "array",
-            "items": {"type": "string"},
-        }
+        "keywords": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["keywords"],
+}
+
+KEYWORD_SELECTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "keywords": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["keywords"],
+}
+
+VOICE_CARD_REWRITE_SCHEMA = {
+    "type": "object",
+    "properties": {"character_voice_card": {"type": "string"}},
+    "required": ["character_voice_card"],
+}
+
+BACKGROUND_EXPERIENCE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "key_experiences": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["key_experiences"],
+}
+
+KEY_EXPERIENCE_INDEX_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "indices": {"type": "array", "items": {"type": "integer"}},
+    },
+    "required": ["indices"],
 }
 
 
@@ -91,7 +107,59 @@ class PersonaIngestService:
     def _normalize_keyword(self, token: str, max_chars: int = 14) -> str:
         return self.system._normalize_display_keyword(token, max_chars=max_chars)
 
-    def _keyword_text_sources(self, summary: dict) -> list[str]:
+    def _refine_voice_card_against_source(self, summary: dict, source_text: str) -> str:
+        voice_card = self.system._normalize_fact(summary.get("character_voice_card", ""), max_chars=600)
+        if not voice_card:
+            return ""
+
+        prompt = f"""
+你要把一段角色自述改写成“严格受原始资料约束”的版本。
+要求：
+1. 只保留原始资料里明确支持的身份、气质、说话方式、价值取向。
+2. 删除任何原始资料里没有明确支持的新事实、新经历、新设定、新关系。
+3. 尤其不要凭空补充职业、身世、过去经历、地理经历、关系史。
+4. 如果原始资料没有出现某个具体名词或具体物件，就不要自己补出来。
+5. 如果原始资料只支持高层倾向，就保持高层表达，不要把它具体化成新场景或新细节。
+6. 保持第一人称、角色口吻和简短自述感。
+7. 允许保留风格，但不允许保留无证据事实。
+8. 不要加入原始资料里没有出现过的口头习惯或戏剧化收尾。
+9. 长度控制在 40 到 120 字。
+10. 只输出 JSON。
+
+原始资料：
+{source_text[:2200]}
+
+待改写文本：
+{voice_card}
+""".strip()
+        try:
+            payload = self.system.model.generate(
+                prompt,
+                return_json=True,
+                schema=VOICE_CARD_REWRITE_SCHEMA,
+                temperature=0.0,
+                max_tokens=180,
+            )
+            refined = self.system._normalize_fact((payload or {}).get("character_voice_card", ""), max_chars=220)
+            return refined or voice_card
+        except Exception:
+            return voice_card
+
+    def _looks_like_display_keyword(self, token: str) -> bool:
+        value = self._normalize_keyword(token, max_chars=12)
+        if not value:
+            return False
+        if len(value) < 2 or len(value) > 8:
+            return False
+        if "\n" in value or "  " in value:
+            return False
+        if re.search(r"[\"'“”‘’（）()\[\]{}<>:：；，。！？?\\|@#%^&*_+=~`]", value):
+            return False
+        if re.search(r"\d", value):
+            return False
+        return True
+
+    def _keyword_label_sources(self, summary: dict) -> list[str]:
         summary_dict = self.system._summary_to_dict(summary)
         texts: list[str] = []
 
@@ -99,7 +167,37 @@ class PersonaIngestService:
         if voice_card:
             texts.append(voice_card)
 
-        for dim_data in (summary_dict.get("base_template", {}) or {}).values():
+        for keyword in list(summary_dict.get("display_keywords", []) or []):
+            clean = self._normalize_keyword(keyword, max_chars=12)
+            if clean:
+                texts.append(clean)
+
+        base_template = summary_dict.get("base_template", {}) or {}
+        for dim_data in base_template.values():
+            if not isinstance(dim_data, dict):
+                continue
+            for item in dim_data.get("items", []) or []:
+                if isinstance(item, dict):
+                    clean = str(item.get("item", "") or "").strip()
+                    if clean:
+                        texts.append(clean)
+            for item in dim_data.get("patterns", []) or []:
+                if isinstance(item, dict):
+                    clean = str(item.get("pattern", "") or "").strip()
+                    if clean:
+                        texts.append(clean)
+        return texts
+
+    def _keyword_evidence_sources(self, summary: dict) -> list[str]:
+        summary_dict = self.system._summary_to_dict(summary)
+        texts: list[str] = []
+
+        voice_card = str(summary_dict.get("character_voice_card", "") or "").strip()
+        if voice_card:
+            texts.append(voice_card)
+
+        base_template = summary_dict.get("base_template", {}) or {}
+        for dim_data in base_template.values():
             if not isinstance(dim_data, dict):
                 continue
             for field in ("rules", "key_experiences"):
@@ -130,63 +228,248 @@ class PersonaIngestService:
 
         return texts
 
-    def _filter_keywords_against_sources(self, keywords: list[str], summary: dict) -> list[str]:
-        source_text = "\n".join(self._keyword_text_sources(summary))
-        filtered: list[str] = []
-        for token in keywords:
-            clean = self._normalize_keyword(token, max_chars=16)
-            if not clean:
-                continue
-            if clean not in source_text:
-                continue
-            filtered.append(clean)
-        return dedupe(filtered, limit=DISPLAY_KEYWORD_LIMIT)
+    def _candidate_keyword_pool(self, summary: dict) -> list[str]:
+        pool: list[str] = []
+        for token in self._keyword_label_sources(summary):
+            clean = self._normalize_keyword(token, max_chars=12)
+            if clean and self._looks_like_display_keyword(clean):
+                pool.append(clean)
+        return dedupe(pool, limit=DISPLAY_KEYWORD_LIMIT)
 
     def _llm_keyword_candidates(self, summary: dict) -> list[str]:
         summary_dict = self.system._summary_to_dict(summary)
-        source_text = "\n".join(self._keyword_text_sources(summary_dict))[:5000]
-        if not source_text.strip():
+        label_text = "\n".join(self._keyword_label_sources(summary_dict))[:3000]
+        evidence_text = "\n".join(self._keyword_evidence_sources(summary_dict))[:5000]
+        if not evidence_text.strip():
             return []
-        prompt = f"""
-你要从下面这份“角色分析师已提炼好的结构化信息”中，挑出适合展示和选择的关键词候选。
 
-要求：
-1. 关键词必须来自这份分析里已经明确出现或可以直接提炼出的内容，不能新增外部信息。
-2. 关键词要优先覆盖：说话方式、态度、气质、关系距离感、口头习惯、明显喜恶、核心性格、叙事方式。
-3. 不要输出过泛的词，例如“角色”“设定”“故事”“经历”“性格”“喜欢”“讨厌”。
-4. 优先输出 12 到 24 个短关键词或短短语。
-5. 尽量让这些词能帮助使用者理解“这个角色会怎么说、怎么表现自己”，而不只是泛泛事实标签。
-6. 只输出 JSON。
-
-分析信息：
-{source_text}
-""".strip()
+        prompt = build_display_keywords_prompt(label_text, evidence_text)
         try:
             payload = self.system.model.generate(
                 prompt,
                 return_json=True,
                 schema=KEYWORD_CANDIDATE_SCHEMA,
-                temperature=0.1,
-                max_tokens=400,
+                temperature=0.0,
+                max_tokens=420,
             )
         except Exception:
             return []
-        raw_keywords = list((payload or {}).get("keywords", []) or [])
-        normalized = [self._normalize_keyword(item, max_chars=16) for item in raw_keywords]
-        normalized = [item for item in normalized if item]
+
+        normalized = [
+            self._normalize_keyword(item, max_chars=12)
+            for item in list((payload or {}).get("keywords", []) or [])
+        ]
+        normalized = [item for item in normalized if item and self._looks_like_display_keyword(item)]
         return dedupe(normalized, limit=DISPLAY_KEYWORD_LIMIT)
+
+    def _finalize_keyword_candidates(self, summary: dict, raw_candidates: list[str]) -> list[str]:
+        candidates = [
+            self._normalize_keyword(item, max_chars=12)
+            for item in list(raw_candidates or [])
+        ]
+        candidates = [item for item in candidates if item and self._looks_like_display_keyword(item)]
+        candidates = dedupe(candidates, limit=24)
+        if not candidates:
+            return []
+
+        evidence_text = "\n".join(self._keyword_evidence_sources(summary))[:5000]
+        candidate_text = "\n".join(f"- {item}" for item in candidates)
+        prompt = build_keyword_selection_prompt(evidence_text, candidate_text)
+        try:
+            payload = self.system.model.generate(
+                prompt,
+                return_json=True,
+                schema=KEYWORD_SELECTION_SCHEMA,
+                temperature=0.0,
+                max_tokens=320,
+            )
+        except Exception:
+            return dedupe(candidates, limit=DISPLAY_KEYWORD_LIMIT)
+
+        normalized = [
+            self._normalize_keyword(item, max_chars=12)
+            for item in list((payload or {}).get("keywords", []) or [])
+        ]
+        normalized = [item for item in normalized if item and self._looks_like_display_keyword(item)]
+        return dedupe(normalized or candidates, limit=DISPLAY_KEYWORD_LIMIT)
 
     def refine_display_keywords(self, summary: dict, raw_text: str) -> list[str]:
         summary_dict = self.system._summary_to_dict(summary)
         llm_keywords = self._llm_keyword_candidates(summary_dict)
-        direct_keywords = [self._normalize_keyword(item, max_chars=16) for item in list(summary_dict.get("display_keywords", []) or [])]
-        combined = [item for item in [*llm_keywords, *direct_keywords] if item]
-        return dedupe(combined, limit=DISPLAY_KEYWORD_LIMIT)
+        direct_keywords = self._candidate_keyword_pool(summary_dict)
+        candidates = [item for item in [*llm_keywords, *direct_keywords] if item]
+        candidates = dedupe(
+            [
+                self._normalize_keyword(item, max_chars=12)
+                for item in candidates
+                if self._normalize_keyword(item, max_chars=12)
+            ],
+            limit=24,
+        )
+        if not candidates:
+            return []
+
+        source_evidence = self.system._prepare_summary_source(raw_text, max_chars=2400)
+        candidate_text = "\n".join(f"- {item}" for item in candidates)
+        prompt = build_keyword_selection_prompt(source_evidence, candidate_text)
+        try:
+            payload = self.system.model.generate(
+                prompt,
+                return_json=True,
+                schema=KEYWORD_SELECTION_SCHEMA,
+                temperature=0.0,
+                max_tokens=320,
+            )
+            normalized = [
+                self._normalize_keyword(item, max_chars=12)
+                for item in list((payload or {}).get("keywords", []) or [])
+            ]
+            normalized = [item for item in normalized if item and self._looks_like_display_keyword(item)]
+            return dedupe(normalized or candidates, limit=DISPLAY_KEYWORD_LIMIT)
+        except Exception:
+            return self._finalize_keyword_candidates(summary_dict, candidates)
+
+    def _extract_background_key_experiences(self, profile: dict, source_text: str) -> list[str]:
+        profile_lines = [
+            f"{key}: {self.system._normalize_fact(value, max_chars=80)}"
+            for key, value in dict(profile or {}).items()
+            if self.system._normalize_fact(value, max_chars=80)
+        ]
+
+        segments: list[str] = []
+        raw_sentences = re.split(r"(?<=[。！？；\n])", str(source_text or ""))
+        for sentence in raw_sentences:
+            clean_sentence = self.system._normalize_fact(sentence, max_chars=160)
+            if not clean_sentence:
+                continue
+            if len(clean_sentence) < 12:
+                continue
+            if re.match(r"^(并|但|而|后来|于是|然后|不过|只是|也|还|又)", clean_sentence):
+                continue
+            segments.append(clean_sentence)
+
+        candidates: list[str] = []
+        for sentence in segments:
+            if not sentence or len(sentence) < 12:
+                continue
+            if self.system._is_meta_commentary(sentence):
+                continue
+            candidates.append(sentence)
+
+        window_candidates: list[str] = []
+        for index, sentence in enumerate(candidates):
+            window_candidates.append(sentence)
+            if index + 1 < len(candidates):
+                merged = f"{sentence} {candidates[index + 1]}".strip()
+                merged = self.system._normalize_fact(merged, max_chars=220)
+                if merged and not self.system._is_meta_commentary(merged):
+                    window_candidates.append(merged)
+        candidates = dedupe(window_candidates, limit=24)
+
+        if candidates:
+            prompt = build_key_experience_selection_prompt(profile_lines, candidates)
+            schema = KEY_EXPERIENCE_INDEX_SCHEMA
+        else:
+            prompt = build_background_extraction_prompt(profile_lines, source_text)
+            schema = BACKGROUND_EXPERIENCE_SCHEMA
+
+        try:
+            payload = self.system.model.generate(
+                prompt,
+                return_json=True,
+                schema=schema,
+                temperature=0.0,
+                max_tokens=360,
+            )
+        except Exception:
+            return []
+
+        if candidates:
+            picked_indices = [
+                int(item)
+                for item in list((payload or {}).get("indices", []) or [])
+                if isinstance(item, int) or (isinstance(item, str) and str(item).isdigit())
+            ]
+            experiences = [candidates[index - 1] for index in picked_indices if 1 <= index <= len(candidates)]
+            if not experiences:
+                fallback_prompt = build_background_extraction_prompt(profile_lines, source_text)
+                try:
+                    fallback_payload = self.system.model.generate(
+                        fallback_prompt,
+                        return_json=True,
+                        schema=BACKGROUND_EXPERIENCE_SCHEMA,
+                        temperature=0.0,
+                        max_tokens=360,
+                    )
+                    raw_fallback = [
+                        self.system._normalize_fact(item, max_chars=160)
+                        for item in list((fallback_payload or {}).get("key_experiences", []) or [])
+                    ]
+                    experiences = [item for item in raw_fallback if item in candidates]
+                except Exception:
+                    experiences = []
+        else:
+            experiences = [
+                self.system._normalize_fact(item, max_chars=160)
+                for item in list((payload or {}).get("key_experiences", []) or [])
+            ]
+
+        experiences = dedupe([item for item in experiences if item], limit=5)
+        experiences = self._prune_overlapping_experiences(experiences)
+        if not experiences or not profile_lines:
+            return experiences
+
+        verification_prompt = f"""
+你要从候选条目里确认哪些内容真的属于“背景关键经历”。
+要求：
+1. 只保留成长起点、启蒙、资格取得、拜师修行、重大试炼、重要约定、出发动机、关键转折。
+2. 删除纯身份档案、称号、出生地、外貌、装备、一般偏好、泛泛性格概括。
+3. 如果一条只是“是谁、来自哪里、叫什么、长什么样”，它不是关键经历。
+4. 宁缺毋滥。
+5. 如果一条把“身份档案”和“真正经历”硬拼在一起，也不要选；只保留更纯粹、更像单一经历单元的条目。
+6. 只输出 JSON。
+
+身份档案：
+{chr(10).join(f"- {line}" for line in profile_lines[:8])}
+
+候选条目：
+{chr(10).join(f"{index}. {item}" for index, item in enumerate(experiences, start=1))}
+""".strip()
+        try:
+            verification = self.system.model.generate(
+                verification_prompt,
+                return_json=True,
+                schema=KEY_EXPERIENCE_INDEX_SCHEMA,
+                temperature=0.0,
+                max_tokens=220,
+            )
+            verified_indices = [
+                int(item)
+                for item in list((verification or {}).get("indices", []) or [])
+                if isinstance(item, int) or (isinstance(item, str) and str(item).isdigit())
+            ]
+            verified = [experiences[index - 1] for index in verified_indices if 1 <= index <= len(experiences)]
+            return self._prune_overlapping_experiences(dedupe(verified or experiences, limit=5))
+        except Exception:
+            return experiences
+
+    def _prune_overlapping_experiences(self, experiences: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for item in sorted(
+            [self.system._normalize_fact(text, max_chars=180) for text in list(experiences or []) if text],
+            key=len,
+        ):
+            if any(item == existing or item in existing or existing in item for existing in cleaned):
+                if any(existing in item and item != existing for existing in cleaned):
+                    continue
+            cleaned.append(item)
+        return dedupe(cleaned, limit=5)
 
     def summarize_with_llm(self, raw_text: str, source_label: str) -> dict | None:
         source_text = self.system._prepare_summary_source(raw_text)
         if len(source_text) > 1800:
             source_text = source_text[:1800]
+
         summary_model = self._summary_model_name()
         summary_timeout = self._summary_timeout()
         summary_max_tokens = self._summary_max_tokens()
@@ -228,7 +511,7 @@ class PersonaIngestService:
             return None
 
         normalized = self.system._normalize_summary(data)
-        self.system.last_summary_debug["summaryStatus"] = "success"
+        normalized["character_voice_card"] = self._refine_voice_card_against_source(normalized, source_text)
         normalized["character_name"] = str(data.get("character_name") or self.system.persona_name or "").strip()
         normalized["source_label"] = str(data.get("source_label") or source_label or "").strip()
         background = normalized.setdefault("base_template", {}).setdefault(
@@ -238,70 +521,15 @@ class PersonaIngestService:
         profile = background.setdefault("profile", {})
         if self.system.persona_name and not profile.get("full_name"):
             profile["full_name"] = self.system.persona_name
+        background["key_experiences"] = self._extract_background_key_experiences(profile, raw_text)
+        self.system.last_summary_debug["summaryStatus"] = "success"
         return normalized
 
     def selected_keyword_candidates(self, summary: dict) -> list[str]:
         summary_dict = self.system._summary_to_dict(summary)
         llm_keywords = self._llm_keyword_candidates(summary_dict)
-        direct_keywords = [self._normalize_keyword(item, max_chars=16) for item in list(summary_dict.get("display_keywords", []) or [])]
-        keyword_sources = [item for item in [*llm_keywords, *direct_keywords] if item]
-        return dedupe(keyword_sources, limit=DISPLAY_KEYWORD_LIMIT)
-
-    def commit_entries_only(self, raw_text: str, source_label: str, kind: str = "source_chunk", priority: float = 1.0, progress_callback=None) -> int:
-        raw_text = str(raw_text or "").strip()
-        if not raw_text:
-            return 0
-        source_fingerprint = self.system._source_fingerprint(raw_text)
-        if source_fingerprint and source_fingerprint in self.system.source_records:
-            existing = self.system.source_records[source_fingerprint]
-            self.system._emit_progress(progress_callback, 100, 100, "done", f"检测到重复资料，已跳过：{existing.get('source_label', source_label)}")
-            return 0
-
-        pending_entries = self._chunk_markdown_source(raw_text, source_label, kind, priority)
-        if not pending_entries:
-            return 0
-
-        def embedding_progress(current, total, stage, detail):
-            self.system._emit_progress(progress_callback, current, total, stage, detail)
-
-        try:
-            self.rag.embed_chunks(pending_entries, progress_callback=embedding_progress)
-        except MistralEmbeddingCapacityError:
-            self.append_entries_without_embeddings(pending_entries, source_fingerprint)
-            return len(pending_entries)
-        except Exception:
-            self.append_entries_without_embeddings(pending_entries, source_fingerprint)
-            return len(pending_entries)
-
-        self.system.entries.extend(pending_entries)
-        if source_fingerprint:
-            self.system.source_records[source_fingerprint] = {"source_label": source_label, "updated_at": datetime.now().isoformat()}
-        self.system._dedupe_storage()
-        self.rebuild_index_from_entries()
-        return len(pending_entries)
-
-    def commit_structured_entries_only(self, raw_text: str, source_label: str, progress_callback=None) -> int:
-        raw_text = str(raw_text or "").strip()
-        if not raw_text:
-            return 0
-        pending_entries = self._build_structured_entries(raw_text, source_label)
-        if not pending_entries:
-            return 0
-
-        def embedding_progress(current, total, stage, detail):
-            self.system._emit_progress(progress_callback, current, total, stage, detail)
-
-        try:
-            self.rag.embed_chunks(pending_entries, progress_callback=embedding_progress)
-        except Exception:
-            self.system.entries.extend(pending_entries)
-            self.system._dedupe_storage()
-            return len(pending_entries)
-
-        self.system.entries.extend(pending_entries)
-        self.system._dedupe_storage()
-        self.rebuild_index_from_entries()
-        return len(pending_entries)
+        direct_keywords = self._candidate_keyword_pool(summary_dict)
+        return self._finalize_keyword_candidates(summary_dict, [*llm_keywords, *direct_keywords])
 
     def get_display_keywords(self, limit: int = DISPLAY_KEYWORD_LIMIT) -> list[str]:
         return dedupe(self.system.display_keywords, limit=limit)
@@ -318,6 +546,54 @@ class PersonaIngestService:
             }
         self.system._dedupe_storage()
 
+    def _wrap_progress_callback(self, progress_callback=None, base: int = 0, span: int = 100, default_total: int = 1):
+        def emit(current, total, stage, detail):
+            ratio = current / float(total or default_total or 1)
+            overall = base + int(ratio * span)
+            self.system._emit_progress(progress_callback, min(overall, base + span), 100, stage, detail)
+
+        return emit
+
+    def _commit_pending_entries(
+        self,
+        pending_entries: list[dict],
+        source_label: str,
+        source_fingerprint: str = "",
+        progress_callback=None,
+        progress_base: int = 0,
+        progress_span: int = 100,
+        success_message: str | None = None,
+        fallback_message: str | None = None,
+    ) -> int:
+        if not pending_entries:
+            return 0
+
+        embed_progress = self._wrap_progress_callback(
+            progress_callback=progress_callback,
+            base=progress_base,
+            span=progress_span,
+            default_total=len(pending_entries),
+        )
+        try:
+            self.rag.embed_chunks(pending_entries, progress_callback=embed_progress)
+        except Exception:
+            self.append_entries_without_embeddings(pending_entries, source_fingerprint)
+            if fallback_message:
+                self.system._emit_progress(progress_callback, 100, 100, "done", fallback_message)
+            return len(pending_entries)
+
+        self.system.entries.extend(pending_entries)
+        if source_fingerprint:
+            self.system.source_records[source_fingerprint] = {
+                "source_label": source_label,
+                "updated_at": datetime.now().isoformat(),
+            }
+        self.system._dedupe_storage()
+        self.rebuild_index_from_entries()
+        if success_message:
+            self.system._emit_progress(progress_callback, 100, 100, "done", success_message)
+        return len(pending_entries)
+
     def _chunk_markdown_source(self, raw_text: str, source_label: str, kind: str, priority: float) -> list[dict]:
         document_id = hashlib.sha1(f"{source_label}:{raw_text[:120]}".encode("utf-8")).hexdigest()[:12]
         markdown = self.rag.convert_text_to_markdown(raw_text, title=source_label)
@@ -329,128 +605,67 @@ class PersonaIngestService:
             priority=priority,
             metadata={"kind": kind},
         )
-        normalized: list[dict] = []
-        for chunk in chunks:
-            payload = {
-                **dict(chunk),
-                "kind": kind,
-                "source_label": source_label,
-                "source_type": "persona",
-            }
-            rag_chunk = RAGChunk(**payload)
-            normalized.append(rag_chunk.model_dump())
-        return normalized
+        return [RAGChunk(**{**dict(chunk), "kind": kind, "source_label": source_label, "source_type": "persona"}).model_dump() for chunk in chunks]
 
     def _build_section_markdown(self, heading_path: list[str], paragraphs: list[str]) -> str:
         clean_paragraphs = [str(item or "").strip() for item in paragraphs if str(item or "").strip()]
         if not clean_paragraphs:
             return ""
         heading_block = "\n".join(
-            f"{'#' * (index + 1)} {title}" for index, title in enumerate(list(heading_path or [])[:4]) if str(title).strip()
+            f"{'#' * (index + 1)} {title}"
+            for index, title in enumerate(list(heading_path or [])[:4])
+            if str(title).strip()
         )
         body = "\n\n".join(clean_paragraphs)
         return "\n\n".join(part for part in (heading_block, body) if part).strip()
 
-    def _story_section_prompt(self, section: dict) -> str:
-        heading_path = " > ".join(section.get("heading_path", []) or []) or "无标题"
-        paragraphs = list(section.get("paragraphs", []) or [])
-        numbered = "\n\n".join(f"[{idx}] {paragraph}" for idx, paragraph in enumerate(paragraphs, start=1))
-        return f"""
-你是角色资料结构分析器。你的任务是判断下面这个资料片段里，哪些段落属于可以单独叙述的“完整故事/事件/经历”。
-
-判断标准：
-1. “故事/事件/经历”指具体发生过的一段过程，通常包含情境、经过、结果、变化中的至少一部分。
-2. 纯基础档案、外貌介绍、设定说明、抽象性格总结、喜好列表、作品外评价，不算故事。
-3. 如果一个片段里包含多个不同事件，要拆成多个 story_unit。
-4. story_unit 必须使用输入里的原段落编号，不要改写内容，不要创造新段落。
-5. paragraph_ids 尽量连续，且每个 story_unit 都应尽量能独立成篇。
-6. 如果这部分没有完整故事，就返回空数组。
-
-输出 JSON：
-- section_type: `story_section` / `mixed_section` / `non_story`
-- story_units: 数组，每项包含：
-  - title: 这个故事单元的简短标题
-  - paragraph_ids: 属于这个故事单元的段落编号数组
-
-章节路径：
-{heading_path}
-
-段落列表：
-{numbered}
-""".strip()
-
     def _segment_story_section(self, section: dict) -> StorySectionModel:
-        paragraphs = list(section.get("paragraphs", []) or [])
-        if not paragraphs:
-            return StorySectionModel()
-        prompt = self._story_section_prompt(section)
-        try:
-            payload = self.system.model.generate(
-                prompt,
-                return_json=True,
-                schema=STORY_SECTION_SCHEMA,
-                temperature=0.0,
-                max_tokens=500,
-                timeout=self._story_segmentation_timeout(),
-            )
-            parsed = StorySectionModel(**(payload or {}))
-        except Exception:
-            return StorySectionModel()
+        payload = segment_story_section(self.system.model, section, timeout=self._story_segmentation_timeout())
+        return StorySectionModel(**payload)
 
-        normalized_units: list[StoryUnitModel] = []
-        max_index = len(paragraphs)
-        seen: set[tuple[int, ...]] = set()
-        for unit in parsed.story_units:
-            ids = []
-            for raw_id in list(unit.paragraph_ids or []):
-                try:
-                    value = int(raw_id)
-                except Exception:
-                    continue
-                if 1 <= value <= max_index and value not in ids:
-                    ids.append(value)
-            ids.sort()
-            if not ids:
-                continue
-            key = tuple(ids)
-            if key in seen:
-                continue
-            seen.add(key)
-            title = str(unit.title or "").strip() or (section.get("title") or "故事片段")
-            normalized_units.append(StoryUnitModel(title=title, paragraph_ids=ids))
-        return StorySectionModel(section_type=str(parsed.section_type or "non_story").strip() or "non_story", story_units=normalized_units)
-
-    def _build_story_chunk(self, source_label: str, base_document_id: str, section: dict, unit: StoryUnitModel, sequence: int) -> dict | None:
+    def _build_story_chunk(
+        self,
+        source_label: str,
+        document_id: str,
+        section: dict,
+        unit: StoryUnitModel,
+        sequence: int,
+    ) -> dict | None:
         paragraphs = list(section.get("paragraphs", []) or [])
-        selected = [paragraphs[idx - 1].strip() for idx in unit.paragraph_ids if 1 <= idx <= len(paragraphs) and paragraphs[idx - 1].strip()]
+        selected = [
+            str(paragraphs[index - 1] or "").strip()
+            for index in list(unit.paragraph_ids or [])
+            if 1 <= index <= len(paragraphs) and str(paragraphs[index - 1] or "").strip()
+        ]
         if not selected:
             return None
+
         heading_path = list(section.get("heading_path", []) or [])
-        story_title = str(unit.title or "").strip() or (heading_path[-1] if heading_path else "故事片段")
-        content = self._build_section_markdown([*heading_path, story_title] if story_title not in heading_path else heading_path, selected)
+        content = self._build_section_markdown(heading_path, selected)
         if not content.strip():
             return None
-        chunk_id = f"{base_document_id}:story:{sequence}"
-        rag_chunk = RAGChunk(
+
+        title = str(unit.title or section.get("title") or f"故事片段{sequence}").strip() or f"故事片段{sequence}"
+        chunk_id = hashlib.sha1(f"{document_id}:story:{sequence}:{title}:{content[:160]}".encode("utf-8")).hexdigest()[:16]
+        return RAGChunk(
             chunk_id=chunk_id,
-            document_id=base_document_id,
+            document_id=f"{document_id}:story:{sequence}",
             source_label=source_label,
             source_type="persona",
             content=content,
-            markdown_path=[*heading_path[:4], story_title][:5],
-            keywords=extract_keywords(f"{story_title}\n{content}", limit=12),
+            markdown_path=heading_path[:4],
+            keywords=extract_keywords(f"{title}\n{content}", limit=10),
             token_count=estimate_tokens(content),
             priority=1.0,
             kind="story_chunk",
-            title=story_title,
+            title=title,
             metadata={
                 "kind": "story_chunk",
-                "title": story_title,
-                "section_type": "story",
+                "title": title,
                 "paragraph_ids": list(unit.paragraph_ids or []),
+                "heading_path": heading_path[:4],
             },
-        )
-        return rag_chunk.model_dump()
+        ).model_dump()
 
     def _build_structured_entries(self, raw_text: str, source_label: str) -> list[dict]:
         markdown = self.rag.convert_text_to_markdown(raw_text, title=source_label)
@@ -465,6 +680,7 @@ class PersonaIngestService:
         for index, section in enumerate(sections, start=1):
             segmentation = self._segment_story_section(section)
             consumed_ids: set[int] = set()
+
             for unit in segmentation.story_units:
                 story_sequence += 1
                 story_entry = self._build_story_chunk(source_label, document_id, section, unit, story_sequence)
@@ -490,11 +706,35 @@ class PersonaIngestService:
             )
             structured_entries.extend(source_entries)
 
-        normalized: list[dict] = []
-        for chunk in structured_entries:
-            rag_chunk = RAGChunk(**chunk)
-            normalized.append(rag_chunk.model_dump())
-        return normalized
+        return [RAGChunk(**chunk).model_dump() for chunk in structured_entries]
+
+    def commit_entries_only(
+        self,
+        raw_text: str,
+        source_label: str,
+        kind: str = "source_chunk",
+        priority: float = 1.0,
+        progress_callback=None,
+    ) -> int:
+        raw_text = str(raw_text or "").strip()
+        if not raw_text:
+            return 0
+
+        source_fingerprint = self.system._source_fingerprint(raw_text)
+        if source_fingerprint and source_fingerprint in self.system.source_records:
+            existing = self.system.source_records[source_fingerprint]
+            self.system._emit_progress(progress_callback, 100, 100, "done", f"检测到重复资料，已跳过：{existing.get('source_label', source_label)}")
+            return 0
+
+        pending_entries = self._chunk_markdown_source(raw_text, source_label, kind, priority)
+        if not pending_entries:
+            return 0
+        return self._commit_pending_entries(
+            pending_entries=pending_entries,
+            source_label=source_label,
+            source_fingerprint=source_fingerprint,
+            progress_callback=progress_callback,
+        )
 
     def commit_summary_and_entries(self, raw_text: str, source_label: str, summary: dict | None, progress_callback=None) -> int:
         raw_text = str(raw_text or "").strip()
@@ -512,40 +752,34 @@ class PersonaIngestService:
 
         self.system._emit_progress(progress_callback, 22, 100, "structuring", "正在识别故事与资料结构")
         pending_entries = self._build_structured_entries(raw_text, source_label)
-
         if not pending_entries:
             if source_fingerprint:
-                self.system.source_records[source_fingerprint] = {"source_label": source_label, "updated_at": datetime.now().isoformat()}
+                self.system.source_records[source_fingerprint] = {
+                    "source_label": source_label,
+                    "updated_at": datetime.now().isoformat(),
+                }
             self.system._emit_progress(progress_callback, 100, 100, "done", "没有新增内容，已完成")
             return 0
 
         total_entries = len(pending_entries)
         story_count = sum(1 for entry in pending_entries if str(entry.get("kind") or "") == "story_chunk")
-        self.system._emit_progress(progress_callback, 40, 100, "embedding", f"正在为 {total_entries} 个检索块生成向量，其中故事块 {story_count} 个")
-
-        def embedding_progress(current, total, stage, detail):
-            ratio = current / (total or total_entries or 1)
-            overall = 40 + int(ratio * 45)
-            self.system._emit_progress(progress_callback, min(overall, 88), 100, stage, detail)
-
-        try:
-            self.rag.embed_chunks(pending_entries, progress_callback=embedding_progress)
-        except MistralEmbeddingCapacityError:
-            self.append_entries_without_embeddings(pending_entries, source_fingerprint)
-            self.system._emit_progress(progress_callback, 100, 100, "done", f"学习完成，共新增 {len(pending_entries)} 个检索块（故事块 {story_count} 个，纯文本检索模式）")
-            return len(pending_entries)
-        except Exception:
-            self.append_entries_without_embeddings(pending_entries, source_fingerprint)
-            self.system._emit_progress(progress_callback, 100, 100, "done", f"学习完成，共新增 {len(pending_entries)} 个检索块（故事块 {story_count} 个，纯文本检索模式）")
-            return len(pending_entries)
-
-        self.system.entries.extend(pending_entries)
-        if source_fingerprint:
-            self.system.source_records[source_fingerprint] = {"source_label": source_label, "updated_at": datetime.now().isoformat()}
-        self.system._dedupe_storage()
-        self.rebuild_index_from_entries()
-        self.system._emit_progress(progress_callback, 100, 100, "done", f"学习完成，共新增 {len(pending_entries)} 个检索块，其中故事块 {story_count} 个")
-        return len(pending_entries)
+        self.system._emit_progress(
+            progress_callback,
+            40,
+            100,
+            "embedding",
+            f"正在为 {total_entries} 个检索块生成向量，其中故事块 {story_count} 个",
+        )
+        return self._commit_pending_entries(
+            pending_entries=pending_entries,
+            source_label=source_label,
+            source_fingerprint=source_fingerprint,
+            progress_callback=progress_callback,
+            progress_base=40,
+            progress_span=45,
+            success_message=f"学习完成，共新增 {len(pending_entries)} 个检索块，其中故事块 {story_count} 个",
+            fallback_message=f"学习完成，共新增 {len(pending_entries)} 个检索块，其中故事块 {story_count} 个（纯文本检索模式）",
+        )
 
     def load_text(self, raw_text: str, source_label: str = "manual_input", progress_callback=None) -> int:
         raw_text = str(raw_text or "").strip()

@@ -1,7 +1,6 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
-import json
 import re
 
 import faiss
@@ -22,6 +21,7 @@ from knowledge.persona_shared import (
     dedupe,
     normalize_vector,
 )
+from knowledge.persona_summary_refiners import build_key_experiences_prompt
 from knowledge.persona_state import (
     AbsoluteTaboo,
     AttitudeTowardUser,
@@ -40,6 +40,25 @@ from knowledge.persona_state import (
 )
 from llm import FallbackMistralLLM
 from persona_models import PersonaSummaryModel, PersonaStatusModel
+
+BACKGROUND_EXPERIENCE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "key_experiences": {
+            "type": "array",
+            "items": {"type": "string"},
+        }
+    },
+    "required": ["key_experiences"],
+}
+
+VOICE_CARD_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "character_voice_card": {"type": "string"},
+    },
+    "required": ["character_voice_card"],
+}
 
 
 class PersonaSystem:
@@ -123,7 +142,7 @@ class PersonaSystem:
                 "scene": "",
                 "emotion": "",
                 "rules_applied": [],
-                "source": "legacy",
+                "source": "restored_example",
                 "affinity_level": "any",
             }
             for item in list(getattr(self, "style_examples", []) or [])
@@ -168,17 +187,17 @@ class PersonaSystem:
         return hashlib.sha1(canonical.encode("utf-8")).hexdigest() if canonical else ""
 
     def _normalize_fact(self, text, max_chars: int = 80):
-        text = re.sub(r"\s+", " ", str(text or ""))
-        text = text.strip(" \t\r\n-:：；，。！？\"'()[]{}")
-        return text[:max_chars].rstrip() if len(text) > max_chars else text
+        value = re.sub(r"\s+", " ", str(text or "")).strip()
+        value = value.strip(" \t\r\n-:：；，。！？、\"'()[]{}")
+        return value[:max_chars].rstrip() if len(value) > max_chars else value
 
     def _normalize_display_keyword(self, token: str, max_chars: int = 12):
-        token = self._normalize_fact(token, max_chars=max_chars)
-        token = token.strip(" \"'[]()（）【】「」『』《》、，。！？；：")
-        token = re.sub(r"^(具有|带有|偏向|呈现|表现出|显得|属于|是一种)", "", token)
-        token = re.sub(r"(倾向|风格|气质|感觉|意味|效果|表现|使用|表达)$", "", token)
-        token = re.sub(r"(一般来说|本身|方面)$", "", token)
-        return token.strip()
+        value = self._normalize_fact(token, max_chars=max_chars)
+        value = value.strip(" \"'[]()（）【】「」『』〈〉《》、，。！？；：")
+        value = re.sub(r"^(具有|带有|偏向|呈现|表现出|显得|属于|是一种)", "", value)
+        value = re.sub(r"(倾向|风格|气质|感觉|意味|效果|表现|使用|表达)$", "", value)
+        value = re.sub(r"(一般来说|本身|方面)$", "", value)
+        return value.strip()
 
     def _split_sentences(self, text):
         return [part.strip() for part in re.split(r"(?<=[。！？!?])\s*", text or "") if part.strip()]
@@ -188,6 +207,105 @@ class PersonaSystem:
         return (not text) or any(word in text for word in META_EXCLUSION_WORDS) or (
             any(word in text for word in AUDIENCE_PERSPECTIVE_WORDS) and any(word in text for word in META_REACTION_WORDS)
         )
+
+    def _refine_key_experiences(self, profile: dict, candidates: list[str]) -> list[str]:
+        cleaned = [
+            self._normalize_fact(item, max_chars=160)
+            for item in list(candidates or [])
+            if item and not self._is_meta_commentary(item)
+        ]
+        cleaned = dedupe([item for item in cleaned if item], limit=12)
+        if not cleaned:
+            return []
+
+        profile_lines = [
+            f"{key}: {self._normalize_fact(value, max_chars=80)}"
+            for key, value in dict(profile or {}).items()
+            if self._normalize_fact(value, max_chars=80)
+        ]
+        prompt = build_key_experiences_prompt(profile_lines, cleaned)
+        try:
+            payload = self.model.generate(
+                prompt,
+                return_json=True,
+                schema=BACKGROUND_EXPERIENCE_SCHEMA,
+                temperature=0.0,
+                max_tokens=260,
+            )
+            picked = [
+                self._normalize_fact(item, max_chars=160)
+                for item in list((payload or {}).get("key_experiences", []) or [])
+            ]
+            picked = [item for item in picked if item in cleaned]
+            return dedupe(picked, limit=5)
+        except Exception:
+            return []
+
+    def _refine_character_voice_card(self, voice_card: str, base_template: dict) -> str:
+        raw_card = self._normalize_fact(voice_card, max_chars=600)
+        if not raw_card:
+            return ""
+
+        evidence_lines: list[str] = []
+        background = dict((base_template or {}).get("00_BACKGROUND", {}) or {})
+        profile = dict(background.get("profile", {}) or {})
+        for key, value in profile.items():
+            clean = self._normalize_fact(value, max_chars=80)
+            if clean:
+                evidence_lines.append(f"{key}: {clean}")
+        for item in list(background.get("key_experiences", []) or [])[:5]:
+            clean = self._normalize_fact(item, max_chars=100)
+            if clean:
+                evidence_lines.append(f"经历: {clean}")
+
+        for dim in ("A_SPEECH_STYLE", "H_PERSONALITY", "I_VALUES_AND_WORLDVIEW", "J_RELATIONSHIP", "K_NARRATIVE"):
+            dim_data = dict((base_template or {}).get(dim, {}) or {})
+            for rule in list(dim_data.get("rules", []) or [])[:3]:
+                clean = self._normalize_fact(rule, max_chars=100)
+                if clean:
+                    evidence_lines.append(f"规则: {clean}")
+
+        for dim in ("E_LIKES", "F_DISLIKES_AND_TABOOS"):
+            dim_data = dict((base_template or {}).get(dim, {}) or {})
+            for item in list(dim_data.get("items", []) or [])[:4]:
+                if not isinstance(item, dict):
+                    continue
+                label = self._normalize_fact(item.get("item", ""), max_chars=40)
+                behavior = self._normalize_fact(item.get("behavior", ""), max_chars=80)
+                if label:
+                    evidence_lines.append(f"偏好: {label} {behavior}".strip())
+
+        if not evidence_lines:
+            return raw_card
+
+        prompt = f"""
+你要把一段角色自述收束成“只基于证据”的版本。
+要求：
+1. 只允许保留证据中已经明确支持的身份、气质、说话方式、价值取向。
+2. 删除任何证据里没有明确支持的新事实、新经历、新设定。
+3. 尤其不要凭空补充身世、过去经历、关系史、地点经历。
+4. 保留第一人称、角色口吻和简短自述感。
+5. 不要把某一句身份句、退场句、口头禅或固定句式机械重复成默认收尾。
+6. 长度控制在 40 到 120 字。
+7. 只输出 JSON。
+证据：
+{chr(10).join(f"- {line}" for line in evidence_lines[:18])}
+
+待收束文本：
+{raw_card}
+""".strip()
+        try:
+            payload = self.model.generate(
+                prompt,
+                return_json=True,
+                schema=VOICE_CARD_SCHEMA,
+                temperature=0.0,
+                max_tokens=180,
+            )
+            refined = self._normalize_fact((payload or {}).get("character_voice_card", ""), max_chars=220)
+            return refined or raw_card
+        except Exception:
+            return raw_card
 
     def _fact_to_keywords(self, value):
         text = self._normalize_fact(value, max_chars=24)
@@ -215,7 +333,7 @@ class PersonaSystem:
             entry["content"] = text
             entry.pop("text", None)
             entry["kind"] = kind
-            entry.setdefault("priority", self._entry_priority(text, kind))
+            entry.setdefault("priority", 1.0)
             entry.setdefault("keywords", self._fact_to_keywords(text))
             entry.setdefault("chunk_id", entry.get("chunk_id") or hashlib.sha1(f"{kind}:{text}".encode("utf-8")).hexdigest()[:12])
             entry.setdefault("document_id", entry.get("document_id") or entry["chunk_id"])
@@ -244,73 +362,21 @@ class PersonaSystem:
         for dim in DIMENSION_ORDER:
             dim_data = base_template_raw.get(dim, {})
             if dim == "00_BACKGROUND":
-                profile = {}
-                for key, value in (dim_data.get("profile", {}) if isinstance(dim_data, dict) else {}).items():
-                    clean = self._normalize_fact(value, max_chars=120)
-                    if clean and not self._is_meta_commentary(clean):
-                        profile[str(key)] = clean
-                experiences = [self._normalize_fact(item, max_chars=160) for item in dim_data.get("key_experiences", []) if item and not self._is_meta_commentary(item)]
-                normalized["base_template"][dim] = {"profile": profile, "key_experiences": dedupe(experiences, limit=8), "confidence": dim_data.get("confidence", "")}
+                normalized["base_template"][dim] = self._normalize_background_dim(dim_data)
             elif dim in {"E_LIKES", "F_DISLIKES_AND_TABOOS"}:
-                items = []
-                for item in dim_data.get("items", []):
-                    if isinstance(item, dict):
-                        label = self._normalize_fact(item.get("item", ""), max_chars=24)
-                        behavior = self._normalize_fact(item.get("behavior", ""), max_chars=160)
-                        level = self._normalize_fact(item.get("level", ""), max_chars=20)
-                        if label and not self._is_meta_commentary(label):
-                            payload = {"item": label, "behavior": behavior}
-                            if level:
-                                payload["level"] = level
-                            items.append(payload)
-                    else:
-                        label = self._normalize_fact(item, max_chars=40)
-                        if label and not self._is_meta_commentary(label):
-                            items.append({"item": label, "behavior": ""})
-                normalized["base_template"][dim] = {"items": items[:8], "confidence": dim_data.get("confidence", "")}
+                normalized["base_template"][dim] = self._normalize_preference_dim(dim_data)
             elif dim == "B_CATCHPHRASES":
-                patterns = []
-                for pattern in dim_data.get("patterns", []):
-                    if not isinstance(pattern, dict):
-                        continue
-                    text = self._normalize_fact(pattern.get("pattern", ""), max_chars=80)
-                    usage = self._normalize_fact(pattern.get("usage", ""), max_chars=80)
-                    tone = self._normalize_fact(pattern.get("tone", ""), max_chars=80)
-                    if text and not self._is_meta_commentary(text):
-                        patterns.append({"pattern": text, "usage": usage, "tone": tone})
-                normalized["base_template"][dim] = {"patterns": patterns[:8], "confidence": dim_data.get("confidence", "")}
+                normalized["base_template"][dim] = self._normalize_catchphrases_dim(dim_data)
             elif dim == "G_AVOID_PATTERNS":
-                patterns = []
-                for pattern in dim_data.get("patterns", []):
-                    if not isinstance(pattern, dict):
-                        continue
-                    text = self._normalize_fact(pattern.get("pattern", ""), max_chars=80)
-                    reason = self._normalize_fact(pattern.get("reason", ""), max_chars=120)
-                    alternative = self._normalize_fact(pattern.get("alternative", ""), max_chars=120)
-                    if text and not self._is_meta_commentary(text):
-                        patterns.append({"pattern": text, "reason": reason, "alternative": alternative})
-                normalized["base_template"][dim] = {"patterns": patterns[:8], "confidence": dim_data.get("confidence", "")}
+                normalized["base_template"][dim] = self._normalize_avoid_patterns_dim(dim_data)
             else:
-                rules = [self._normalize_fact(rule, max_chars=200) for rule in dim_data.get("rules", []) if rule and not self._is_meta_commentary(rule)]
-                normalized["base_template"][dim] = {"rules": dedupe(rules, limit=5), "confidence": dim_data.get("confidence", "")}
+                normalized["base_template"][dim] = self._normalize_rule_dim(dim_data)
 
-        normalized["character_voice_card"] = self._normalize_fact(summary.get("character_voice_card", ""), max_chars=600)
-        examples = []
-        for example in summary.get("style_examples", []):
-            if not isinstance(example, dict):
-                continue
-            text = self._normalize_fact(example.get("text", ""), max_chars=200)
-            if not text or self._is_meta_commentary(text):
-                continue
-            examples.append({
-                "text": text,
-                "scene": self._normalize_fact(example.get("scene", ""), max_chars=40),
-                "emotion": self._normalize_fact(example.get("emotion", ""), max_chars=30),
-                "rules_applied": dedupe([self._normalize_fact(rule, max_chars=40) for rule in example.get("rules_applied", [])], limit=3),
-                "source": example.get("source", ""),
-                "affinity_level": example.get("affinity_level", "any"),
-            })
-        normalized["style_examples"] = examples[:18]
+        normalized["character_voice_card"] = self._refine_character_voice_card(
+            summary.get("character_voice_card", ""),
+            normalized["base_template"],
+        )
+        normalized["style_examples"] = self._normalize_style_examples(summary)
         normalized["display_keywords"] = dedupe(
             [
                 kw
@@ -322,83 +388,184 @@ class PersonaSystem:
 
         return normalized
 
+    def _normalize_background_dim(self, dim_data: dict) -> dict:
+        profile = {}
+        for key, value in (dim_data.get("profile", {}) if isinstance(dim_data, dict) else {}).items():
+            clean = self._normalize_fact(value, max_chars=120)
+            if clean and not self._is_meta_commentary(clean):
+                profile[str(key)] = clean
+        raw_experiences = [
+            self._normalize_fact(item, max_chars=160)
+            for item in dim_data.get("key_experiences", [])
+            if item and not self._is_meta_commentary(item)
+        ]
+        experiences = self._refine_key_experiences(profile, raw_experiences)
+        return {
+            "profile": profile,
+            "key_experiences": experiences,
+            "confidence": dim_data.get("confidence", ""),
+        }
+
+    def _normalize_preference_dim(self, dim_data: dict) -> dict:
+        items = []
+        for item in dim_data.get("items", []):
+            if isinstance(item, dict):
+                label = self._normalize_fact(item.get("item", ""), max_chars=24)
+                behavior = self._normalize_fact(item.get("behavior", ""), max_chars=160)
+                level = self._normalize_fact(item.get("level", ""), max_chars=20)
+                if label and not self._is_meta_commentary(label):
+                    payload = {"item": label, "behavior": behavior}
+                    if level:
+                        payload["level"] = level
+                    items.append(payload)
+            else:
+                label = self._normalize_fact(item, max_chars=40)
+                if label and not self._is_meta_commentary(label):
+                    items.append({"item": label, "behavior": ""})
+        return {"items": items[:8], "confidence": dim_data.get("confidence", "")}
+
+    def _normalize_catchphrases_dim(self, dim_data: dict) -> dict:
+        patterns = []
+        for pattern in dim_data.get("patterns", []):
+            if not isinstance(pattern, dict):
+                continue
+            text = self._normalize_fact(pattern.get("pattern", ""), max_chars=80)
+            usage = self._normalize_fact(pattern.get("usage", ""), max_chars=80)
+            tone = self._normalize_fact(pattern.get("tone", ""), max_chars=80)
+            if text and not self._is_meta_commentary(text):
+                patterns.append({"pattern": text, "usage": usage, "tone": tone})
+        return {"patterns": patterns[:8], "confidence": dim_data.get("confidence", "")}
+
+    def _normalize_avoid_patterns_dim(self, dim_data: dict) -> dict:
+        patterns = []
+        for pattern in dim_data.get("patterns", []):
+            if not isinstance(pattern, dict):
+                continue
+            text = self._normalize_fact(pattern.get("pattern", ""), max_chars=80)
+            reason = self._normalize_fact(pattern.get("reason", ""), max_chars=120)
+            alternative = self._normalize_fact(pattern.get("alternative", ""), max_chars=120)
+            if text and not self._is_meta_commentary(text):
+                patterns.append({"pattern": text, "reason": reason, "alternative": alternative})
+        return {"patterns": patterns[:8], "confidence": dim_data.get("confidence", "")}
+
+    def _normalize_rule_dim(self, dim_data: dict) -> dict:
+        rules = [self._normalize_fact(rule, max_chars=200) for rule in dim_data.get("rules", []) if rule and not self._is_meta_commentary(rule)]
+        return {"rules": dedupe(rules, limit=5), "confidence": dim_data.get("confidence", "")}
+
+    def _normalize_style_examples(self, summary: dict) -> list[dict]:
+        examples = []
+        for example in summary.get("style_examples", []):
+            if not isinstance(example, dict):
+                continue
+            text = self._normalize_fact(example.get("text", ""), max_chars=200)
+            if not text or self._is_meta_commentary(text):
+                continue
+            examples.append(
+                {
+                    "text": text,
+                    "scene": self._normalize_fact(example.get("scene", ""), max_chars=40),
+                    "emotion": self._normalize_fact(example.get("emotion", ""), max_chars=30),
+                    "rules_applied": dedupe(
+                        [self._normalize_fact(rule, max_chars=40) for rule in example.get("rules_applied", [])],
+                        limit=3,
+                    ),
+                    "source": example.get("source", ""),
+                    "affinity_level": example.get("affinity_level", "any"),
+                }
+            )
+        return examples[:18]
+
     def _merge_summary_data(self, summary):
         summary = self._summary_to_dict(summary)
         base_template = summary.get("base_template", {})
         for dim in DIMENSION_ORDER:
             dim_data = base_template.get(dim, {})
             if dim == "00_BACKGROUND":
-                existing_profile = self.base_template[dim].setdefault("profile", {})
-                for key, value in dim_data.get("profile", {}).items():
-                    if value and key not in existing_profile:
-                        existing_profile[key] = value
-                self.base_template[dim]["key_experiences"] = dedupe(self.base_template[dim].get("key_experiences", []) + dim_data.get("key_experiences", []), limit=8)
+                self._merge_background_dim(dim, dim_data)
             elif dim in {"E_LIKES", "F_DISLIKES_AND_TABOOS"}:
-                existing = self.base_template[dim].get("items", [])
-                seen = {item.get("item") for item in existing if isinstance(item, dict)}
-                for item in dim_data.get("items", []):
-                    label = item.get("item") if isinstance(item, dict) else None
-                    if label and label not in seen:
-                        existing.append(item)
-                        seen.add(label)
-                self.base_template[dim]["items"] = existing[:8]
+                self._merge_preference_dim(dim, dim_data)
             elif dim == "B_CATCHPHRASES":
-                existing = self.base_template[dim].get("patterns", [])
-                seen = {pattern["pattern"] for pattern in existing if isinstance(pattern, dict) and pattern.get("pattern")}
-                for pattern in dim_data.get("patterns", []):
-                    if isinstance(pattern, dict) and pattern.get("pattern") and pattern["pattern"] not in seen:
-                        existing.append(pattern)
-                        seen.add(pattern["pattern"])
-                self.base_template[dim]["patterns"] = existing[:8]
+                self._merge_patterns_dim(dim, dim_data)
             elif dim == "G_AVOID_PATTERNS":
-                existing = self.base_template[dim].get("patterns", [])
-                seen = {pattern["pattern"] for pattern in existing if isinstance(pattern, dict) and pattern.get("pattern")}
-                for pattern in dim_data.get("patterns", []):
-                    if isinstance(pattern, dict) and pattern.get("pattern") and pattern["pattern"] not in seen:
-                        existing.append(pattern)
-                        seen.add(pattern["pattern"])
-                self.base_template[dim]["patterns"] = existing[:8]
+                self._merge_patterns_dim(dim, dim_data)
             else:
-                self.base_template[dim]["rules"] = dedupe(self.base_template[dim].get("rules", []) + dim_data.get("rules", []), limit=5)
+                self._merge_rule_dim(dim, dim_data)
             if dim_data.get("confidence"):
                 self.base_template[dim]["confidence"] = dim_data["confidence"]
+        self._merge_style_examples(summary.get("style_examples", []))
+        self._merge_display_keywords(summary.get("display_keywords", []))
+        self._merge_character_voice_card(summary.get("character_voice_card", ""))
 
+    def _merge_background_dim(self, dim: str, dim_data: dict):
+        existing_profile = self.base_template[dim].setdefault("profile", {})
+        for key, value in dim_data.get("profile", {}).items():
+            if value and key not in existing_profile:
+                existing_profile[key] = value
+        self.base_template[dim]["key_experiences"] = dedupe(
+            self.base_template[dim].get("key_experiences", []) + dim_data.get("key_experiences", []),
+            limit=8,
+        )
+
+    def _merge_preference_dim(self, dim: str, dim_data: dict):
+        existing = self.base_template[dim].get("items", [])
+        seen = {item.get("item") for item in existing if isinstance(item, dict)}
+        for item in dim_data.get("items", []):
+            label = item.get("item") if isinstance(item, dict) else None
+            if label and label not in seen:
+                existing.append(item)
+                seen.add(label)
+        self.base_template[dim]["items"] = existing[:8]
+
+    def _merge_patterns_dim(self, dim: str, dim_data: dict):
+        existing = self.base_template[dim].get("patterns", [])
+        seen = {pattern["pattern"] for pattern in existing if isinstance(pattern, dict) and pattern.get("pattern")}
+        for pattern in dim_data.get("patterns", []):
+            if isinstance(pattern, dict) and pattern.get("pattern") and pattern["pattern"] not in seen:
+                existing.append(pattern)
+                seen.add(pattern["pattern"])
+        self.base_template[dim]["patterns"] = existing[:8]
+
+    def _merge_rule_dim(self, dim: str, dim_data: dict):
+        self.base_template[dim]["rules"] = dedupe(
+            self.base_template[dim].get("rules", []) + dim_data.get("rules", []),
+            limit=5,
+        )
+
+    def _merge_style_examples(self, examples: list[dict]):
         existing_texts = {example.get("text", "") for example in self.style_examples if isinstance(example, dict)}
-        for example in summary.get("style_examples", []):
+        for example in list(examples or []):
             if isinstance(example, dict) and example.get("text") and example["text"] not in existing_texts:
                 self.style_examples.append(example)
                 existing_texts.add(example["text"])
         self.style_examples = self.style_examples[:18]
-        self.display_keywords = dedupe(self.display_keywords + summary.get("display_keywords", []), limit=DISPLAY_KEYWORD_LIMIT)
-        new_card = summary.get("character_voice_card", "")
-        if new_card:
-            self.character_voice_card = new_card if not self.character_voice_card else (self._merge_voice_cards(self.character_voice_card, new_card) or new_card)
+
+    def _merge_display_keywords(self, keywords: list[str]):
+        self.display_keywords = dedupe(
+            self.display_keywords + list(keywords or []),
+            limit=DISPLAY_KEYWORD_LIMIT,
+        )
+
+    def _merge_character_voice_card(self, new_card: str):
+        new_card = str(new_card or "").strip()
+        if not new_card:
+            return
+        self.character_voice_card = (
+            new_card
+            if not self.character_voice_card
+            else (self._merge_voice_cards(self.character_voice_card, new_card) or new_card)
+        )
 
     def _merge_voice_cards(self, old_card: str, new_card: str) -> str:
         prompt = (
-            "下面是同一个角色的两段说话方式描述，请合并成一段简洁、稳定、可直接用于扮演的角色声音底稿。"
+            "下面是同一个角色的两段说话方式描述，请合并成一段简洁、稳定、可直接用于扮演的角色声音底稿。\n"
             "要求保留最有辨识度的说话节奏、距离感和价值取向，去掉重复和分析性描述。\n\n"
-            f"描述A：{old_card}\n\n描述B：{new_card}\n\n请直接输出合并后的结果。"
+            f"描述 A：{old_card}\n\n描述 B：{new_card}\n\n请直接输出合并后的结果。"
         )
         try:
             result = self.model.generate(prompt, temperature=0.1, max_tokens=300)
             return self._normalize_fact(str(result or ""), max_chars=600)
         except Exception:
             return ""
-
-    def _base_template_text(self, summary: dict):
-        payload = {
-            "character_name": summary.get("character_name", self.persona_name),
-            "source_label": summary.get("source_label", ""),
-            "base_template": summary.get("base_template", {}),
-            "character_voice_card": summary.get("character_voice_card", ""),
-            "display_keywords": summary.get("display_keywords", []),
-            "style_examples": summary.get("style_examples", []),
-        }
-        return json.dumps(payload, ensure_ascii=False, indent=2)
-
-    def _entry_priority(self, text, kind) -> float:
-        return 1.0
 
     def _looks_like_persona_chunk(self, text) -> int:
         if self._is_meta_commentary(text):
@@ -410,9 +577,13 @@ class PersonaSystem:
             score -= 1
         return score
 
-    def _chunk_text(self, raw_text, target_chars: int = 420, hard_limit: int = 650):
-        markdown = self.ingest_service.rag.convert_text_to_markdown(str(raw_text or ""), title=self.persona_name)
-        chunks = self.ingest_service.rag.build_chunks(
+    def _prepare_summary_source(self, raw_text, max_chars: int = 1800):
+        raw_text = str(raw_text or "").strip()
+        if not raw_text:
+            return ""
+
+        markdown = self.ingest_service.rag.convert_text_to_markdown(raw_text, title=self.persona_name)
+        chunk_payloads = self.ingest_service.rag.build_chunks(
             markdown,
             document_id="summary-preview",
             source_label=self.persona_name,
@@ -420,14 +591,14 @@ class PersonaSystem:
             priority=1.0,
             metadata={"kind": "summary_preview"},
         )
-        return dedupe([chunk.get("content", "") for chunk in chunks if chunk.get("content")], limit=max(1, hard_limit))
-
-    def _prepare_summary_source(self, raw_text, max_chars: int = 1800):
-        raw_text = str(raw_text or "").strip()
-        if not raw_text:
-            return ""
-
-        chunks = [str(chunk or "").strip() for chunk in self._chunk_text(raw_text) if str(chunk or "").strip()]
+        chunks = dedupe(
+            [
+                str(chunk.get("content", "") or "").strip()
+                for chunk in chunk_payloads
+                if str(chunk.get("content", "") or "").strip()
+            ],
+            limit=650,
+        )
         ranked_chunks = sorted(chunks, key=self._looks_like_persona_chunk, reverse=True)
 
         selected: list[str] = []
@@ -451,21 +622,14 @@ class PersonaSystem:
     def build_precise_query_context(self, query: str, top_k: int = 5, char_budget: int = 700) -> str:
         return self.context_service.build_precise_query_context(query, top_k=top_k, char_budget=char_budget)
 
-    def _summarize_with_llm(self, raw_text: str, source_label: str):
-        return self.ingest_service.summarize_with_llm(raw_text, source_label)
-
     def get_display_keywords(self, limit: int = DISPLAY_KEYWORD_LIMIT):
         return self.ingest_service.get_display_keywords(limit=limit)
-
-    def _commit_summary_and_entries(self, raw_text: str, source_label: str, summary: dict | None, progress_callback=None):
-        return self.ingest_service.commit_summary_and_entries(raw_text, source_label, summary, progress_callback=progress_callback)
 
     def load_text(self, raw_text: str, source_label: str = "manual_input", progress_callback=None):
         return self.ingest_service.load_text(raw_text, source_label=source_label, progress_callback=progress_callback)
 
     def load_file(self, filepath: str, progress_callback=None):
         return self.ingest_service.load_file(filepath, progress_callback=progress_callback)
-
     def get_status(self):
         return PersonaStatusModel(persona_name=self.persona_name, chunk_count=self.chunk_count, display_keywords=self.get_display_keywords())
 

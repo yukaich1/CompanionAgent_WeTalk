@@ -50,57 +50,67 @@ class IntentExtractionResult(BaseModel):
 
 
 PROMPT_INTENT_EXTRACTION = """
-你是对话路由分析器。你要判断当前用户问题属于哪一类，并给后续检索和工具调用提供最有帮助的主题与关键词。
+You are a dialogue routing analyzer for a role-playing chat system.
 
-可选 intent 只能是：
-- `character_related`: 用户在问当前角色本人的身份、设定、性格、喜恶、态度、经历、故事、口头禅、说话方式
-- `weather_query`: 用户在问天气、气温、降雨、风力、体感、穿衣建议等天气信息
-- `web_search_query`: 用户在问与当前角色资料无关的现实知识、新闻、百科、最新信息、价格、汇率、比赛结果等
-- `casual_chat`: 普通闲聊，不需要工具，也不依赖角色事实资料
-- `emotional_interaction`: 用户在倾诉、表达情绪、寻求安慰、陪伴或情绪回应
-- `value_judgment`: 用户在问观点、评价、看法，需要角色表达态度
-- `help_request`: 用户明确要求查询、搜索、总结某个现实主题，通常需要工具
+Your job:
+1. Understand the user's actual intent from the current message and recent conversation.
+2. Decide which response path should be used.
+3. Decide whether persona retrieval is needed, whether a tool is needed, and what topic/keywords should drive retrieval.
 
-`response_mode` 只能是：
-- `self_intro`
-- `story`
-- `persona_fact`
-- `external`
-- `emotional`
-- `value`
-- `casual`
+Allowed values:
 
-`recall_mode` 只能是：
-- `none`
-- `identity`
-- `persona`
-- `story`
+intent:
+- character_related
+- weather_query
+- web_search_query
+- casual_chat
+- emotional_interaction
+- value_judgment
+- help_request
 
-`persona_focus` 只能是：
-- `general`
-- `likes`
-- `dislikes`
-- `catchphrase`
-- `personality`
-- `self_intro`
+response_mode:
+- self_intro
+- story
+- persona_fact
+- external
+- emotional
+- value
+- casual
 
-输出要求：
-1. `extracted_topic` 用一句短语概括用户真正关心的主题。
-2. `extracted_keywords` 给出 3 到 10 个最适合后续检索或搜索的关键词，优先保留用户原话里的实体、领域、限定条件。
-3. 如果是 `weather_query`，请在 `tool_params.location` 中提取地点；如果用户没明确给地点，可以结合最近对话推断，但不要编造。
-4. 如果是 `web_search_query` 或 `help_request`，请在 `tool_params.search_query` 中生成简洁可搜索的查询词。
-5. 只有当用户问的是“当前角色本人”的身份、经历、设定、态度时，才能归为 `character_related`。
-6. 如果用户问的是别的人、别的战队、别的作品、别的现实概念，即使句式里有“你认识吗”，也应归为 `web_search_query` 或 `help_request`。
-7. 不要依赖固定候选词匹配，要按语义理解。
-8. 只输出 JSON，不要输出解释性文字。
+recall_mode:
+- none
+- identity
+- persona
+- story
 
-最近对话：
+persona_focus:
+- general
+- likes
+- dislikes
+- catchphrase
+- personality
+- self_intro
+
+Decision rules:
+- Use character_related only when the user is asking about the current role character themself.
+- Use story only when the user is genuinely asking for the character's past experience, a concrete event, or a story retelling.
+- If the user is just chatting, reacting, venting, greeting, or continuing a natural conversation, do not force story retrieval.
+- Use weather_query only when the user is explicitly asking about weather.
+- Use web_search_query only when the user is explicitly asking for real-world facts, explanations, introductions, or external information.
+- If the user mentions a real-world topic while expressing emotion or casual conversation, do not automatically trigger search.
+- extracted_topic should be a short phrase describing the true topic.
+- extracted_keywords should contain 3 to 10 useful retrieval/search keywords, prioritizing entities, domain terms, constraints, and named concepts from the user.
+- If weather_query is chosen, put the location in tool_params.location.
+- If web_search_query or help_request is chosen, put a concise search string in tool_params.search_query.
+- Output JSON only.
+
+Recent conversation:
 {recent_conversation}
 
-当前角色名：
+Current character name:
 {character_name}
 
-用户输入：
+User input:
 {user_input}
 """.strip()
 
@@ -111,8 +121,8 @@ class IntentExtractor:
 
     def extract(self, user_input: str, recent_conversation: str = "", character_name: str = "") -> IntentExtractionResult:
         prompt = PROMPT_INTENT_EXTRACTION.format(
-            recent_conversation=recent_conversation or "无",
-            character_name=character_name or "当前角色",
+            recent_conversation=recent_conversation or "None",
+            character_name=character_name or "Current character",
             user_input=user_input or "",
         )
         try:
@@ -140,27 +150,30 @@ class IntentExtractor:
 
     def _normalize_result(self, data: dict[str, Any], user_input: str) -> IntentExtractionResult:
         result = IntentExtractionResult(**data)
+
+        allowed_intents = {
+            "character_related",
+            "weather_query",
+            "web_search_query",
+            "casual_chat",
+            "emotional_interaction",
+            "value_judgment",
+            "help_request",
+        }
+        allowed_modes = {"self_intro", "story", "persona_fact", "external", "emotional", "value", "casual"}
+        allowed_recall = {"none", "identity", "persona", "story"}
+        allowed_focus = {"general", "likes", "dislikes", "catchphrase", "personality", "self_intro"}
+
+        result.intent = result.intent if result.intent in allowed_intents else "casual_chat"
+        result.response_mode = result.response_mode if result.response_mode in allowed_modes else "casual"
+        result.recall_mode = result.recall_mode if result.recall_mode in allowed_recall else "none"
+        result.persona_focus = result.persona_focus if result.persona_focus in allowed_focus else "general"
         result.extracted_topic = str(result.extracted_topic or user_input or "").strip()
-        result.response_mode = str(result.response_mode or "casual").strip() or "casual"
-        result.recall_mode = str(result.recall_mode or "none").strip() or "none"
-        result.persona_focus = str(result.persona_focus or "general").strip() or "general"
         result.extracted_keywords = [
             str(item or "").strip()
             for item in list(result.extracted_keywords or [])
             if str(item or "").strip()
         ][:10]
-
-        if result.intent in {"character_related", "value_judgment", "casual_chat", "emotional_interaction"}:
-            result.needs_tool = False
-            result.tool_name = None
-            result.tool_params = {}
-            if result.intent == "character_related" and result.recall_mode not in {"identity", "persona", "story"}:
-                result.recall_mode = "persona"
-            if result.intent == "value_judgment" and result.response_mode == "casual":
-                result.response_mode = "value"
-            if result.intent == "emotional_interaction" and result.response_mode == "casual":
-                result.response_mode = "emotional"
-            return result
 
         if result.intent == "weather_query":
             result.needs_tool = True
@@ -184,6 +197,33 @@ class IntentExtractor:
             params = dict(result.tool_params or {})
             search_query = str(params.get("search_query", "") or result.extracted_topic or user_input or "").strip()
             result.tool_params = {"search_query": search_query, "language": "zh"}
+            return result
+
+        if result.intent == "character_related":
+            result.needs_tool = False
+            result.tool_name = None
+            result.tool_params = {}
+            if result.recall_mode == "none":
+                result.recall_mode = "persona"
+            if result.response_mode == "casual":
+                result.response_mode = "persona_fact"
+            return result
+
+        if result.intent == "value_judgment":
+            result.needs_tool = False
+            result.tool_name = None
+            result.tool_params = {}
+            if result.response_mode == "casual":
+                result.response_mode = "value"
+            return result
+
+        if result.intent == "emotional_interaction":
+            result.needs_tool = False
+            result.tool_name = None
+            result.tool_params = {}
+            if result.response_mode == "casual":
+                result.response_mode = "emotional"
+            result.recall_mode = "none"
             return result
 
         result.intent = "casual_chat"
