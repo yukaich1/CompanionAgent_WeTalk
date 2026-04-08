@@ -3,19 +3,41 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Wetalk</title>
+  <title>WitchTalk</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
+  <div id="startup-screen" class="startup-screen">
+    <div class="startup-orbit"></div>
+    <div class="startup-particles"></div>
+    <div class="startup-card">
+      <div class="brand-mark" aria-hidden="true">
+        <div class="brand-hat"></div>
+        <div class="brand-moon"></div>
+      </div>
+      <div class="startup-kicker">Moonlit Companion</div>
+      <div class="startup-title">WitchTalk</div>
+      <div class="startup-subtitle">A quiet place for enchanted conversations</div>
+    </div>
+  </div>
+
   <div class="aurora"></div>
   <div class="noise"></div>
 
   <div class="app-shell">
     <aside class="sidebar">
       <div class="brand-card glass">
-        <div class="eyebrow">Wetalk</div>
-        <h1>你的虚拟聊天伙伴</h1>
-        <p>陪你聊天，也陪你把角色慢慢养成。</p>
+        <div class="brand-lockup">
+          <div class="brand-mark small" aria-hidden="true">
+            <div class="brand-hat"></div>
+            <div class="brand-moon"></div>
+          </div>
+          <div>
+            <div class="eyebrow">WitchTalk</div>
+            <h1>魔法对话空间</h1>
+          </div>
+        </div>
+        <p>让记忆与情绪在一处安静的角落慢慢生长。</p>
       </div>
 
       <div class="status-card glass">
@@ -40,7 +62,7 @@
             <div id="agent-affinity" class="metric-value">♡</div>
           </div>
         </div>
-        <div class="metric-label">人设关键词</div>
+        <div class="metric-label">人设</div>
         <div id="keyword-list" class="tag-list"></div>
       </div>
 
@@ -58,6 +80,7 @@
         <div class="chat-header-main">
           <img id="chat-agent-avatar" class="avatar header-avatar" alt="avatar">
           <div class="chat-header-copy">
+            <div class="chat-brandline">WitchTalk</div>
             <div id="chat-title" class="chat-title">伊蕾娜</div>
             <div id="typing-status" class="typing-status">已连接</div>
           </div>
@@ -78,7 +101,7 @@
     <div class="drawer-panel glass">
       <div class="drawer-header">
         <div>
-          <div class="eyebrow">Settings</div>
+          <div class="eyebrow">WitchTalk</div>
           <h3>角色配置</h3>
         </div>
         <button id="close-settings" class="ghost-button" type="button">关闭</button>
@@ -105,7 +128,7 @@
         <div class="switch-row compact-switch-row">
           <div>
             <div class="field-label">人设联网补充</div>
-            <div class="inline-meta">开启后，上传资料会按 PIXIV 百科、萌娘百科、WIKI 的顺序依次补充检索。</div>
+            <div class="inline-meta">开启后，上传资料按既定网站依次补充检索。</div>
           </div>
           <label class="toggle">
             <input id="persona-web-search-toggle" type="checkbox" checked>
@@ -147,7 +170,7 @@
     <div class="modal-panel glass">
       <div class="drawer-header">
         <div>
-          <div class="eyebrow">Avatar Editor</div>
+          <div class="eyebrow">WitchTalk</div>
           <h3>调整头像区域</h3>
         </div>
         <button id="close-avatar-editor" class="ghost-button" type="button">关闭</button>

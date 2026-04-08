@@ -380,6 +380,7 @@ class AISystem:
     def send_message(self, user_input, return_json: bool = False, attached_image=None):
         self.num_messages += 1
         self.buffer.add_message("user", user_input)
+        recent_conversation = conversation_to_string(self.get_message_history(False)[-6:])
 
         route_decision, intent_result, tool_report, assembled_context, persona_recall = self._run_pipeline(str(user_input or ""))
         if tool_report.follow_up_message:
@@ -391,7 +392,11 @@ class AISystem:
         thought_persona_context = self.context_assembler.build_prompt_context(assembled_context)
         grounding = self._build_grounding_contract(intent_result, persona_recall)
 
-        pending_signal = estimate_pending_signal(str(user_input or ""))
+        pending_signal = estimate_pending_signal(
+            self,
+            str(user_input or ""),
+            recent_conversation=recent_conversation,
+        )
         self.emotion_state_machine.queue_signal(pending_signal)
         memories, recalled_memories = self.memory_system.recall_memories(self.get_message_history(False))
         thought_data = self.thought_system.think(

@@ -73,6 +73,34 @@ class ThoughtSystem:
             thoughts[2] = "这句可以吃到现有证据，重点是让角色语气稳定落地。"
         return [{"content": item} for item in thoughts]
 
+    def _build_internal_feelings(self, emotion_name: str, emotion_reason: str, intensity: int, user_emotions: list[str]) -> list[str]:
+        lines: list[str] = []
+        normalized = str(emotion_name or "").strip().lower()
+        if normalized in {"gratitude", "joy", "happyfor", "love"}:
+            lines.append("这句话会让心口微微松一点，语气也更容易柔下来。")
+        elif normalized in {"reproach", "anger", "hate"}:
+            lines.append("会本能地收住一点，先把边界和分寸守住。")
+        elif normalized in {"pity", "sadness", "distress"}:
+            lines.append("注意力会先落在对方的状态上，更想把人接住。")
+        else:
+            lines.append("心里先保持平稳，先确认对方真正想表达什么。")
+
+        if "positive" in user_emotions:
+            lines.append("能感觉到对方是在靠近或示好，距离感可以自然放松一点。")
+        elif "sad" in user_emotions:
+            lines.append("能察觉到对方情绪偏低，回应时会更照顾对方感受。")
+        elif "negative" in user_emotions:
+            lines.append("会先留一点警惕，不急着把语气放得太软。")
+
+        if intensity >= 5:
+            lines.append("这轮情绪起伏比较明显，回应时不能太轻飘。")
+        elif intensity <= 2:
+            lines.append("波动不大，保持自然就好。")
+
+        if emotion_reason:
+            lines.append(str(emotion_reason).strip())
+        return lines[:4]
+
     def think(self, messages, memories, recalled_memories, last_message, persona_context=""):
         data = self._fallback_thought_output()
 
@@ -94,6 +122,12 @@ class ThoughtSystem:
         data["emotion_reason"] = emotion_reason
         data["emotion_intensity"] = intensity
         data["thoughts"] = self._build_internal_thoughts(last_content, persona_context)
+        data["internal_feelings"] = self._build_internal_feelings(
+            emotion_name,
+            emotion_reason,
+            intensity,
+            data["possible_user_emotions"],
+        )
         data["evidence_status"] = "evidence-backed" if str(persona_context or "").strip() else "unsupported"
 
         if emotion_name == "Neutral":

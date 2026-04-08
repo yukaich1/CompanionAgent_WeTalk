@@ -9,6 +9,17 @@ from reasoning.emotion_state_machine import EmotionSignal
 from utils import format_date, format_memories_to_string, format_time, time_since_last_message_string
 
 
+TURN_IMPACT_SCHEMA = {
+    "mood": "str",
+    "intensity": "float",
+    "valence": "float",
+    "trust_delta": "float",
+    "affection_delta": "float",
+    "familiarity_delta": "float",
+    "rationale": "str",
+}
+
+
 def _clean_prompt_line(text: str, limit: int = 120) -> str:
     value = re.sub(r"\s+", " ", str(text or "")).strip(" \t\r\n-:：；，。！？、\"'[]")
     if not value:
@@ -184,18 +195,55 @@ def build_format_data(system, content, thought_data, memories, persona_context, 
     }
 
 
-def estimate_pending_signal(user_input) -> EmotionSignal:
-    text = str(user_input or "")
-    positive = ("喜欢", "谢谢", "开心", "高兴", "温暖", "信任", "陪我", "爱你")
-    negative = ("讨厌", "恶心", "讽刺", "失望", "生气", "烦", "无聊")
-    sad = ("难过", "伤心", "低落", "沮丧", "孤独", "疲惫", "痛苦")
-    if any(token in text for token in negative):
-        return EmotionSignal(mood="受伤", intensity=0.35, valence=-0.45)
-    if any(token in text for token in sad):
-        return EmotionSignal(mood="关切", intensity=0.25, valence=-0.15)
-    if any(token in text for token in positive):
-        return EmotionSignal(mood="愉快", intensity=0.20, valence=0.25)
-    return EmotionSignal(mood="平静", intensity=0.05, valence=0.0)
+def estimate_pending_signal(system, user_input, recent_conversation: str = "") -> EmotionSignal:
+    text = str(user_input or "").strip()
+    if not text:
+        return EmotionSignal()
+
+    prompt = f"""
+你在做“本轮互动影响评估”。请根据用户这句话及最近对话，判断这轮互动对角色当前情绪和关系状态的影响。
+
+要求：
+1. 不要靠关键词机械匹配，要理解语义、语气、赞美、安抚、依赖、冷淡、攻击、命令、调情、疏离等互动姿态。
+2. 只评估“这一轮互动影响”，不要总结角色设定，不要写长解释。
+3. 如果用户是在夸赞、关心、表达信任、示好、依赖，允许给出正向 affection/trust 变化。
+4. 如果用户是在攻击、嘲讽、冷漠命令、贬低，允许给出负向变化。
+5. 如果只是普通信息提问或平淡闲聊，变化应接近 0。
+6. 数值必须保守：
+   - intensity: 0 到 1
+   - valence: -1 到 1
+   - trust_delta / affection_delta: -0.08 到 0.08
+   - familiarity_delta: -0.04 到 0.04
+7. mood 用简短中文，如：平静、愉快、受伤、关切、警惕、害羞、无奈、放松、期待。
+
+最近对话：
+{str(recent_conversation or "无").strip()}
+
+用户本轮输入：
+{text}
+""".strip()
+
+    try:
+        payload = system.model.generate(
+            [{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=320,
+            return_json=True,
+            schema=TURN_IMPACT_SCHEMA,
+        )
+        if not isinstance(payload, dict):
+            return EmotionSignal()
+        return EmotionSignal(
+            mood=str(payload.get("mood", "平静") or "平静").strip() or "平静",
+            intensity=max(0.0, min(1.0, float(payload.get("intensity", 0.0) or 0.0))),
+            valence=max(-1.0, min(1.0, float(payload.get("valence", 0.0) or 0.0))),
+            trust_delta=max(-0.08, min(0.08, float(payload.get("trust_delta", 0.0) or 0.0))),
+            affection_delta=max(-0.08, min(0.08, float(payload.get("affection_delta", 0.0) or 0.0))),
+            familiarity_delta=max(-0.04, min(0.04, float(payload.get("familiarity_delta", 0.0) or 0.0))),
+            rationale=_clean_prompt_line(payload.get("rationale", ""), 160),
+        )
+    except Exception:
+        return EmotionSignal()
 
 
 def thought_signal(thought_data) -> EmotionSignal:
@@ -209,12 +257,14 @@ def thought_signal(thought_data) -> EmotionSignal:
 
 
 def derive_relation_impact(signal: EmotionSignal) -> dict:
-    valence = signal.valence
-    if valence > 0.15:
-        return {"trust_delta": 0.012, "affection_delta": 0.014, "familiarity_delta": 0.016}
-    if valence < -0.15:
-        return {"trust_delta": -0.010, "affection_delta": -0.012, "familiarity_delta": 0.003}
-    return {"familiarity_delta": 0.01}
+    trust_delta = float(getattr(signal, "trust_delta", 0.0) or 0.0)
+    affection_delta = float(getattr(signal, "affection_delta", 0.0) or 0.0)
+    familiarity_delta = float(getattr(signal, "familiarity_delta", 0.0) or 0.0)
+    return {
+        "trust_delta": max(-0.08, min(0.08, trust_delta)),
+        "affection_delta": max(-0.08, min(0.08, affection_delta)),
+        "familiarity_delta": max(-0.04, min(0.04, familiarity_delta)),
+    }
 
 
 def derive_topic_tags(user_input) -> list[str]:
@@ -265,6 +315,19 @@ def summarize_thoughts(system, thought_data, limit=5) -> list[str]:
     return lines
 
 
+def summarize_internal_feelings(system, thought_data, limit=4) -> list[str]:
+    feelings = thought_data.get("internal_feelings", []) if isinstance(thought_data, dict) else []
+    lines: list[str] = []
+    for item in feelings:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        lines.append(system._truncate_for_prompt(text, 120))
+        if len(lines) >= limit:
+            break
+    return lines
+
+
 def _terminal_debug_report(system, payload: dict) -> None:
     print("[DEBUG] ===== Turn Trace =====")
     print(f"[DEBUG] route={payload.get('route')} intent={payload.get('intent')} tool={payload.get('tool')}")
@@ -290,6 +353,14 @@ def _terminal_debug_report(system, payload: dict) -> None:
     print("[DEBUG] slow thoughts:")
     if thoughts:
         for line in thoughts:
+            print(f"  - {line}")
+    else:
+        print("  (none)")
+
+    internal_feelings = payload.get("internal_feelings") or []
+    print("[DEBUG] internal feelings:")
+    if internal_feelings:
+        for line in internal_feelings:
             print(f"  - {line}")
     else:
         print("  (none)")
@@ -335,6 +406,7 @@ def record_debug_info(
         "multi_query_count": len(list(query_plan.get("multi_queries", []) or [])),
         "hits": hits,
         "thoughts": summarize_thoughts(system, thought_data),
+        "internal_feelings": summarize_internal_feelings(system, thought_data),
     }
     system.last_debug_info = {**(system.last_debug_info or {}), "turnTrace": payload}
     _terminal_debug_report(system, payload)

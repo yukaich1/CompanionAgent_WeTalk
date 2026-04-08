@@ -22,6 +22,7 @@ const AVATAR_VIEWPORT = { size: 280, output: 512 };
 const PREVIEW_KEYWORD_SELECTION_LIMIT = 8;
 
 const elements = {
+  startupScreen: document.getElementById("startup-screen"),
   messages: document.getElementById("messages"),
   messageInput: document.getElementById("message-input"),
   sendButton: document.getElementById("send-button"),
@@ -69,6 +70,11 @@ const elements = {
 const avatarCanvasContext = elements.avatarCanvas.getContext("2d");
 let autoPreviewTimer = null;
 
+function dismissStartupScreen() {
+  if (!elements.startupScreen) return;
+  elements.startupScreen.classList.add("hidden");
+}
+
 function showToast(text) {
   elements.toast.textContent = text;
   elements.toast.classList.remove("hidden");
@@ -92,6 +98,8 @@ function sleep(ms) {
 }
 
 function normalizeMoodLabel(value) {
+  const normalized = String(value || "").trim();
+  const key = normalized.toLowerCase();
   const mapping = {
     neutral: "平静",
     exuberant: "雀跃",
@@ -107,7 +115,7 @@ function normalizeMoodLabel(value) {
     concerned: "关切",
     hurt: "受伤",
   };
-  return mapping[value] || value || "平静";
+  return mapping[key] || normalized || "平静";
 }
 
 function splitPreviewSnippets(preview) {
@@ -384,6 +392,7 @@ async function bootstrap() {
   const snapshot = await requestJson("/api/bootstrap");
   renderSnapshot(snapshot);
   setTypingStatus("已连接");
+  setTimeout(dismissStartupScreen, 900);
 }
 
 async function sendMessage() {

@@ -5,33 +5,34 @@ cd /d "%~dp0"
 title Wetalk Launcher
 
 if not exist ".venv\Scripts\python.exe" (
-    echo [Wetalk] 未找到虚拟环境：.venv\Scripts\python.exe
-    echo [Wetalk] 请先创建虚拟环境并安装依赖。
+    echo [Wetalk] Virtual environment not found: .venv\Scripts\python.exe
+    echo [Wetalk] Please create .venv and install dependencies first.
     echo.
     pause
     exit /b 1
 )
 
 if not exist "app.py" (
-    echo [Wetalk] 未找到 app.py，无法启动项目。
+    echo [Wetalk] app.py was not found.
+    echo [Wetalk] Startup aborted.
     echo.
     pause
     exit /b 1
 )
 
 if not exist ".env" (
-    echo [Wetalk] 警告：当前目录下未找到 .env 文件。
-    echo [Wetalk] 如果没有配置 API Key，模型相关功能可能无法正常使用。
+    echo [Wetalk] Warning: .env was not found in the project folder.
+    echo [Wetalk] Model features may not work until API settings are configured.
     echo.
 )
 
-echo [Wetalk] 正在启动...
-echo [Wetalk] 项目目录：%cd%
+echo [Wetalk] Starting...
+echo [Wetalk] Working directory: %cd%
 echo.
 
 call ".venv\Scripts\activate.bat"
 python app.py
 
 echo.
-echo [Wetalk] 程序已退出。
+echo [Wetalk] Process exited.
 pause

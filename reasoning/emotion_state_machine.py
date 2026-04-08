@@ -120,7 +120,6 @@ class RelationshipSystem:
     def __init__(self):
         self.friendliness = 0.0
         self.dominance = 0.0
-        self.interaction_count = 0
 
     def set_relation(self, friendliness=None, dominance=None):
         if friendliness is not None:
@@ -132,21 +131,6 @@ class RelationshipSystem:
         num_days = dt / 86400.0
         self.friendliness *= math.exp(-num_days / 90.0)
         self.dominance *= math.exp(-num_days / 120.0)
-
-    def on_user_message(self, text):
-        text = str(text or "").strip()
-        if not text:
-            return
-        self.interaction_count += 1
-        friendliness_delta = 0.0
-        dominance_delta = 0.0
-        if any(token in text for token in ("谢谢", "喜欢", "信任", "陪我", "晚安", "辛苦了")):
-            friendliness_delta += 1.8
-        if any(token in text for token in ("讨厌", "闭嘴", "滚", "烦死人", "不喜欢你")):
-            friendliness_delta -= 3.2
-        if any(token in text for token in ("命令", "立刻", "必须", "现在就")):
-            dominance_delta += 1.2
-        self.set_relation(self.friendliness + friendliness_delta, self.dominance + dominance_delta)
 
     def on_emotion(self, emotion, intensity):
         if emotion in {"Gratitude", "HappyFor", "Joy", "Love"}:
@@ -192,21 +176,6 @@ class EmotionSystem:
     def add_emotion(self, emotion):
         if isinstance(emotion, Emotion):
             self.mood += emotion
-            self.clamp_mood()
-
-    def apply_user_signal(self, text):
-        text = str(text or "").strip()
-        if not text:
-            return
-        delta = Emotion()
-        if any(token in text for token in ("开心", "高兴", "喜欢", "谢谢", "期待", "安心", "太好了")):
-            delta += Emotion(0.035, 0.02, -0.005)
-        if any(token in text for token in ("难过", "伤心", "失落", "低落", "沮丧", "委屈", "孤独", "累")):
-            delta += Emotion(-0.03, -0.02, -0.015)
-        if any(token in text for token in ("讨厌你", "烦死人", "闭嘴", "滚", "不喜欢你", "讽刺", "恶心", "失望")):
-            delta += Emotion(-0.045, 0.03, 0.025)
-        if delta.get_intensity() > 0:
-            self.mood += delta
             self.clamp_mood()
 
     def reset_mood(self):
@@ -295,6 +264,10 @@ class EmotionSignal(BaseModel):
     mood: str = "平静"
     intensity: float = Field(default=0.0, ge=0.0, le=1.0)
     valence: float = Field(default=0.0, ge=-1.0, le=1.0)
+    trust_delta: float = Field(default=0.0, ge=-0.08, le=0.08)
+    affection_delta: float = Field(default=0.0, ge=-0.08, le=0.08)
+    familiarity_delta: float = Field(default=0.0, ge=-0.04, le=0.04)
+    rationale: str = ""
 
 
 class EmotionState(BaseModel):
@@ -316,8 +289,15 @@ class EmotionStateMachine:
     def update_from_thought(self, thought_emotion: EmotionSignal) -> EmotionState:
         valence = thought_emotion.valence * 0.7 + self.pending_signal.valence * 0.3
         intensity = min(1.0, thought_emotion.intensity * 0.7 + self.pending_signal.intensity * 0.3)
+        chosen_mood = thought_emotion.mood or self.pending_signal.mood or self.baseline.mood
+        pending_stronger = (
+            self.pending_signal.intensity >= max(0.12, thought_emotion.intensity * 0.9)
+            and abs(self.pending_signal.valence) >= abs(thought_emotion.valence) + 0.05
+        )
+        if pending_stronger and str(self.pending_signal.mood or "").strip():
+            chosen_mood = self.pending_signal.mood
         self.current_state = EmotionState(
-            mood=thought_emotion.mood or self.pending_signal.mood or self.baseline.mood,
+            mood=chosen_mood,
             intensity=intensity,
             valence=valence,
             updated_at=datetime.now(),
