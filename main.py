@@ -6,6 +6,7 @@ import json
 import re
 from collections import deque
 from datetime import datetime
+from uuid import uuid4
 
 import requests
 from pydantic import BaseModel, Field
@@ -127,6 +128,7 @@ class AISystem:
         self.emotion_state_machine = EmotionStateMachine()
         self.response_generator = ResponseGenerator(self)
         self.store = AISystemStore(self)
+        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid4().hex[:8]
 
         self.num_messages = 0
         self.last_message = None
@@ -320,32 +322,144 @@ class AISystem:
             }.get(persona_focus, ""),
         }
 
-    def _choose_response(self, user_input: str, thought_data: dict, grounding: dict, tool_context: str, persona_context: str, persona_recall, intent_result) -> str:
+    def _memory_sensitive_request(self, user_input: str, intent_result) -> bool:
+        response_mode = str(getattr(intent_result, "response_mode", "casual") or "casual").strip()
+        if response_mode in {"self_intro", "story", "persona_fact", "external", "emotional"}:
+            return False
+
+        text = str(user_input or "").strip()
+        if not text:
+            return False
+
+        memory_markers = (
+            "还记得",
+            "记得吗",
+            "之前说过",
+            "上次说过",
+            "你说过",
+            "我说过",
+            "以前",
+            "之前",
+            "上次",
+            "我们聊过",
+            "你还知道",
+            "我的喜好",
+            "我喜欢什么",
+            "我讨厌什么",
+            "我是不是",
+        )
+        return any(marker in text for marker in memory_markers)
+
+    def _memory_evidence_available(self, assembled_context) -> bool:
+        if not assembled_context:
+            return False
+        slots = getattr(assembled_context, "slots", {}) or {}
+        return bool(
+            str(slots.get("layer1_stable_memory", "") or "").strip()
+            or str(slots.get("layer2_topic_memory", "") or "").strip()
+            or str(slots.get("layer3_deep_memory", "") or "").strip()
+        )
+
+    def _evaluate_evidence_status(
+        self,
+        user_input: str,
+        intent_result,
+        grounding: dict,
+        tool_context: str,
+        persona_context: str,
+        assembled_context,
+        story_hits: list | None = None,
+    ) -> dict:
+        response_mode = str(getattr(intent_result, "response_mode", "casual") or "casual").strip()
+        story_hits = list(story_hits or [])
+        persona_context_ok = bool(str(persona_context or "").strip())
+        identity_ok = bool(grounding.get("has_identity_reference"))
+        memory_ok = self._memory_evidence_available(assembled_context)
+        tool_ok = bool(str(tool_context or "").strip())
+
+        if response_mode == "external":
+            return {"required": True, "ready": tool_ok, "reason": "tool" if tool_ok else "tool_missing"}
+        if response_mode == "story":
+            return {
+                "required": True,
+                "ready": bool(story_hits),
+                "reason": "story_hit" if story_hits else "story_missing",
+            }
+        if response_mode == "self_intro":
+            return {
+                "required": True,
+                "ready": identity_ok or persona_context_ok,
+                "reason": "identity" if (identity_ok or persona_context_ok) else "identity_missing",
+            }
+        if response_mode == "persona_fact":
+            return {
+                "required": True,
+                "ready": persona_context_ok,
+                "reason": "persona" if persona_context_ok else "persona_missing",
+            }
+        if self._memory_sensitive_request(user_input, intent_result):
+            return {
+                "required": True,
+                "ready": memory_ok,
+                "reason": "memory" if memory_ok else "memory_missing",
+            }
+        return {"required": False, "ready": True, "reason": "not_required"}
+
+    def _choose_response(
+        self,
+        user_input: str,
+        thought_data: dict,
+        grounding: dict,
+        tool_context: str,
+        persona_context: str,
+        persona_recall,
+        intent_result,
+        assembled_context=None,
+    ) -> str:
         response_mode = str(getattr(intent_result, "response_mode", "casual") or "casual").strip()
         persona_focus = str(getattr(intent_result, "persona_focus", "general") or "general").strip()
         story_hits = list((getattr(persona_recall, "metadata", {}) or {}).get("story_hits", []) or [])
+        evidence_status = self._evaluate_evidence_status(
+            user_input=user_input,
+            intent_result=intent_result,
+            grounding=grounding,
+            tool_context=tool_context,
+            persona_context=persona_context,
+            assembled_context=assembled_context,
+            story_hits=story_hits,
+        )
+        self.last_debug_info = {
+            **(self.last_debug_info or {}),
+            "evidenceGate": evidence_status,
+        }
 
         if response_mode == "self_intro":
-            if not grounding.get("has_identity_reference") and not str(persona_context or "").strip():
+            if not evidence_status["ready"]:
                 return self.response_generator._no_evidence_reply(str(user_input or ""), thought_data, mode="self_intro")
             return self.response_generator.self_intro(str(user_input or ""), thought_data, persona_context)
 
         if response_mode == "story":
-            if not story_hits:
+            if not evidence_status["ready"]:
                 return self.response_generator._no_evidence_reply(str(user_input or ""), thought_data, mode="story")
             return self.response_generator.story(str(user_input or ""), thought_data, story_hits[0] if story_hits else {})
 
         if response_mode == "external":
+            if not evidence_status["ready"]:
+                return self.response_generator._no_evidence_reply(str(user_input or ""), thought_data, mode="external")
             return self.response_generator.external(str(user_input or ""), thought_data, tool_context)
 
         if response_mode == "emotional":
             return self.response_generator.emotional(str(user_input or ""), thought_data)
 
         if response_mode == "persona_fact":
-            if not str(persona_context or "").strip():
+            if not evidence_status["ready"]:
                 return self.response_generator._no_evidence_reply(str(user_input or ""), thought_data, mode="persona")
             return self.response_generator.persona_focus(str(user_input or ""), thought_data, persona_context, persona_focus)
+        if response_mode == "value" and evidence_status["required"] and not evidence_status["ready"]:
+            return self.response_generator._no_evidence_reply(str(user_input or ""), thought_data, mode="general")
         if response_mode == "casual":
+            if evidence_status["required"] and not evidence_status["ready"]:
+                return self.response_generator._no_evidence_reply(str(user_input or ""), thought_data, mode="general")
             return self.response_generator.casual(
                 str(user_input or ""),
                 thought_data,
@@ -416,7 +530,16 @@ class AISystem:
             persona_recall=persona_recall,
         )
 
-        response = self._choose_response(user_input, thought_data, grounding, tool_context_for_turn, persona_context, persona_recall, intent_result)
+        response = self._choose_response(
+            user_input,
+            thought_data,
+            grounding,
+            tool_context_for_turn,
+            persona_context,
+            persona_recall,
+            intent_result,
+            assembled_context=assembled_context,
+        )
         if not response:
             response = "我现在没法把这件事说得太确定。"
         if str(getattr(intent_result, "response_mode", "") or "") == "story":
@@ -428,18 +551,30 @@ class AISystem:
 
         self.memory_writer.remember(
             self.new_memory_state,
-            event_summary=self._truncate_for_prompt(f"用户提到：{user_input}；{self.config.name} 回应：{response}", 280),
+            summary=self._truncate_for_prompt(
+                f"用户提到：{user_input}；{self.config.name} 回应：{response}",
+                280,
+            ),
+            user_text=str(user_input or ""),
+            assistant_text=str(response or ""),
             topic_tags=derive_topic_tags(str(user_input or "")),
             relation_impact=derive_relation_impact(pending_signal),
             importance=0.55,
             character_emotion=str(thought_data.get("emotion", "平静")),
+            scope="",
+            source_session_id=self.session_id,
+            source_turn_index=self.num_messages,
         )
         self.memory_system.set_state(self.new_memory_state)
         self._sync_persona_state()
 
         self.last_message = datetime.now()
         self.tick()
-        self.health_monitor.record_turn_metrics(coverage_score=assembled_context.metadata.get("coverage_score", 0.0))
+        evidence_gate = (self.last_debug_info or {}).get("evidenceGate", {})
+        self.health_monitor.record_turn_metrics(
+            coverage_score=assembled_context.metadata.get("coverage_score", 0.0),
+            evidence_backed=bool(evidence_gate.get("ready", False)),
+        )
         self.buffer.add_message("assistant", response)
         return json.dumps(response, ensure_ascii=False, indent=2) if return_json else response
 
@@ -450,12 +585,12 @@ class AISystem:
         return self.emotion_system.mood
 
     def get_beliefs(self):
-        semantic_notes = [
+        stable_notes = [
             record.content
-            for record in getattr(self.new_memory_state, "semantic_records", [])
+            for record in getattr(self.new_memory_state, "stable_records", [])
             if getattr(record, "scope", "") == "USER_SPECIFIC" and getattr(record, "content", "")
         ]
-        return semantic_notes or self.memory_system.get_beliefs()
+        return stable_notes or self.memory_system.get_beliefs()
 
     def set_mood(self, pleasure=None, arousal=None, dominance=None) -> None:
         if pleasure is None and arousal is None and dominance is None:

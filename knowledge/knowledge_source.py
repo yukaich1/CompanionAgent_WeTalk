@@ -64,9 +64,21 @@ class MemoryRecordView(BaseModel):
 
 
 class MemoryRecallResult(BaseModel):
-    episodic_records: list[MemoryRecordView] = Field(default_factory=list)
-    semantic_records: list[MemoryRecordView] = Field(default_factory=list)
+    episode_records: list[MemoryRecordView] = Field(default_factory=list)
+    stable_records: list[MemoryRecordView] = Field(default_factory=list)
     relation_state: dict[str, Any] = Field(default_factory=dict)
+
+
+class UnifiedEvidenceItem(BaseModel):
+    evidence_id: str
+    source_kind: str
+    content: str
+    title: str = ""
+    priority: float = 0.0
+    scope: str = ""
+    memory_type: str = ""
+    topic_room: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class DeduplicatedContext(BaseModel):

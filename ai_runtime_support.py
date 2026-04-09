@@ -62,9 +62,9 @@ def relation_state_summary(system) -> str:
     metrics = relation_metrics(system)
     affinity_level = _affinity_level_for_prompt(system)
     guidance = {
-        "stranger": "保持礼貌和适度距离，不要过分越界到私密话题，也不要使用过分亲昵的称呼。",
-        "familiar": "语气可以自然一些，允许轻微玩笑和熟悉感，但仍保留边界。",
-        "close": "可以更柔和、更直接地表达在意与关心，允许自然流露亲近感。",
+        "stranger": "互动边界较远，避免默认进入私密或过分亲昵的表达。",
+        "familiar": "互动边界有所放松，可以自然体现熟悉感，但不要跳出角色模板。",
+        "close": "互动边界更近，允许自然体现亲近感，但仍以角色模板为准。",
     }
     return (
         f"level={affinity_level}; trust={metrics['trust']}; affection={metrics['affection']}; "
@@ -94,7 +94,7 @@ def build_persona_injection_prompt(system, thought_data: dict) -> str:
     persona = system.persona_system
     current_emotion = str(thought_data.get("emotion", "平静") or "平静").strip() or "平静"
     affinity_level = _affinity_level_for_prompt(system)
-    return str(
+    prompt = str(
         build_base_template_injection_prompt(
             character_name=system.config.name,
             character_voice_card=str(getattr(persona, "character_voice_card", "") or ""),
@@ -106,6 +106,7 @@ def build_persona_injection_prompt(system, thought_data: dict) -> str:
         )
         or ""
     ).strip()
+    return system._truncate_for_prompt(prompt, 1400)
 
 
 def _split_evidence_blocks(persona_context: str) -> list[str]:

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from memory.memory_rag_engine import MemoryRAGEngine
+from memory.memory_taxonomy import classify_memory_taxonomy
 from memory.memory_writer import MemoryWriter
 from memory.state_models import MemorySystemState
 from utils import conversation_to_string, format_timestamp, get_approx_time_ago_str
@@ -34,27 +35,31 @@ class MemorySystem:
         self.state = state
 
     def get_beliefs(self) -> list[str]:
-        return [record.content for record in self.state.semantic_records if record.content]
+        return [record.content for record in self.state.stable_records if record.content]
 
     def remember(self, content, emotion=None, is_insight=False):
         summary = str(content or "").strip()
         if not summary:
             return
         importance = 0.8 if is_insight else 0.55
+        taxonomy = classify_memory_taxonomy(summary, llm=getattr(self.writer, "llm", None))
         self.writer.remember(
             self.state,
-            event_summary=summary,
+            summary=summary,
+            verbatim_excerpt=summary,
             topic_tags=[],
             relation_impact={"familiarity_delta": 0.01},
             importance=importance,
             character_emotion=str(getattr(emotion, "name", "") or "neutral"),
+            memory_type=str(taxonomy.get("memory_type", "") or ""),
+            topic_room=str(taxonomy.get("topic_room", "") or ""),
         )
 
     def recall(self, query: str):
         result = self.rag_engine.recall(query, self.state)
         return [
             MemoryView(content=record.content)
-            for record in result.episodic_records
+            for record in result.episode_records
             if str(record.content or "").strip()
         ]
 
@@ -64,9 +69,9 @@ class MemorySystem:
     def consolidate_memories(self):
         return None
 
-    def get_recent_episodic_memories(self):
-        recent = sorted(self.state.episodic_records, key=lambda item: item.created_at)[-8:]
-        return [MemoryView(content=record.event_summary, timestamp=record.created_at) for record in recent]
+    def get_recent_episode_memories(self):
+        recent = sorted(self.state.episode_records, key=lambda item: item.created_at)[-8:]
+        return [MemoryView(content=record.display_text(), timestamp=record.created_at) for record in recent]
 
     def build_working_memory(self, messages, limit: int = 6):
         filtered = [message for message in list(messages or []) if message.get("role") in {"user", "assistant"}]

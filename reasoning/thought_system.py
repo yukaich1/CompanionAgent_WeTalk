@@ -36,7 +36,7 @@ class ThoughtSystem:
             "evidence_status": "unsupported",
             "emotion_intensity": 3,
             "emotion": "Neutral",
-            "emotion_reason": "当前先保持克制和稳定。",
+            "emotion_reason": "当前先贴着角色模板和眼前这句话回应。",
             "next_action": "final_answer",
             "relationship_change": {"friendliness": 0.0, "dominance": 0.0},
         }
@@ -53,11 +53,11 @@ class ThoughtSystem:
 
     def _infer_character_emotion(self, text: str) -> tuple[str, str, int]:
         if any(token in text for token in ("谢谢", "喜欢你", "辛苦了", "抱抱", "晚安")):
-            return "Gratitude", "用户表达偏温和或亲近，回应可以更自然柔和一些。", 4
+            return "Gratitude", "用户表达偏温和或亲近，回应可以更自然地靠近对方。", 4
         if any(token in text for token in ("讨厌", "闭嘴", "滚", "烦死了", "恶心")):
-            return "Reproach", "用户措辞带有明显攻击性，回应需要收敛并降温。", 5
+            return "Reproach", "用户措辞带有明显攻击性，回应要更注意边界和立场。", 5
         if any(token in text for token in ("难过", "伤心", "失落", "低落", "委屈")):
-            return "Pity", "用户状态偏低落，回应应更克制、更关照。", 4
+            return "Pity", "用户状态偏低落，回应应先接住情绪，再按角色方式继续说。", 4
         return "Neutral", "当前没有特别强的情绪波动，保持平静自然。", 3
 
     def _build_internal_thoughts(self, text: str, persona_context: str) -> list[dict]:
@@ -79,7 +79,7 @@ class ThoughtSystem:
         if normalized in {"gratitude", "joy", "happyfor", "love"}:
             lines.append("这句话会让心口微微松一点，语气也更容易柔下来。")
         elif normalized in {"reproach", "anger", "hate"}:
-            lines.append("会本能地收住一点，先把边界和分寸守住。")
+            lines.append("会先把边界和分寸守住，再决定怎么接这句话。")
         elif normalized in {"pity", "sadness", "distress"}:
             lines.append("注意力会先落在对方的状态上，更想把人接住。")
         else:

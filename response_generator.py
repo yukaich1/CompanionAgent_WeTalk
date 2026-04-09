@@ -177,6 +177,8 @@ class ResponseGenerator:
 展示标签：
 {display_keywords}
 
+这些标签只用于帮助你理解人物，不要把标签本身机械复述给用户。
+
 最近对话：
 {recent_dialogue}
 
@@ -191,6 +193,8 @@ class ResponseGenerator:
 - 保持第一人称，直接对用户说话。
 - 不要写成第三人称旁白、舞台说明、括号动作或小剧场。
 - 不要机械重复固定开场、固定退场句、固定身份句或固定口头禅。
+- 模板、标签、示例句都只是帮助你理解角色，不是现成台词库。
+- 优先直接回应用户当前意图，不要把回答写成谜语、猜谜、展示文案或刻意表演的人设开场，除非用户明确要求这种效果。
 - 如果证据不足，只承认证据不足，不要编造。
 """.strip()
 
@@ -275,13 +279,13 @@ class ResponseGenerator:
             thought_data=thought_data,
             evidence_text="\n\n".join(evidence_parts) if evidence_parts else "最近对话与角色底色。",
             constraints=[
-                "不要只回一个词，至少形成一段完整自然的对话回应。",
-                "优先顺着用户这句话接住语气、时间感或场景感。",
-                "可以轻微展开，但不要突然切去讲设定、故事或外部知识。",
-                "不要写成模板寒暄，也不要用固定身份句收尾。",
+                "先自然回应这句问候或闲聊本身，不要急着表演角色设定。",
+                "如果合适，可以顺着时间感、场景感或关系感轻轻展开一点，但不要生硬加戏。",
+                "不要突然切去讲设定、故事、自我介绍或外部知识。",
+                "普通问候优先像真实对话，不要写成猜谜、展示句或固定模板寒暄。",
             ],
         )
-        return self._generate(prompt, max_tokens=760, temperature=0.55, isolated=False)
+        return self._generate(prompt, max_tokens=820, temperature=0.6, isolated=False)
 
     def story(self, user_input: str, thought_data: dict, story_hit: dict | None) -> str:
         story_hit = dict(story_hit or {})
@@ -328,7 +332,11 @@ class ResponseGenerator:
                 "身份事实优先使用基础身份背景，补充证据只能辅助，不要扩写成完整百科。",
                 "如果资料不够，就只说能确定的部分，不要硬补过去经历。",
                 "要像角色本人在介绍自己，不要写成档案、简历或第三人称概述。",
+                "先直接回答“我是谁”，再自然补 1 到 2 个有助于认识这个角色的细节。",
+                "不要写成谜语、反问游戏、舞台开场白、角色展示文案或刻意吊着对方的句式。",
+                "不要为了显得有角色味，就把示例里的固定句型硬搬出来。",
                 "可以自然展开，但不要被固定开场或固定收尾绑住。",
+                "说完就自然落地，不要故意留成半截句或等待对方来猜。",
                 "不要在说完后追加一句否定自己前文的回退句。",
             ],
         )
@@ -393,19 +401,12 @@ class ResponseGenerator:
         has_dialogue_address = any(token in response for token in ("你", "您", "我"))
         quotes_balanced = response.count('"') % 2 == 0 and response.count("“") == response.count("”")
         sentence_count = len(re.findall(r"[。！？?!]", response))
-        has_supportive_move = any(
-            token in response
-            for token in ("陪", "听", "说说", "没关系", "可以", "愿意", "在这儿", "告诉我", "跟我说", "别急", "慢慢来")
-        )
-        has_self_anecdote = any(token in response for token in ("我上次", "以前我也", "我之前也", "我记得我"))
         question_only = sentence_count <= 1 and response.endswith(("吗？", "吗?", "呢？", "呢?"))
         if (
-            len(stripped) >= 18
+            len(stripped) >= 12
             and has_dialogue_address
             and quotes_balanced
-            and sentence_count >= 2
-            and has_supportive_move
-            and not has_self_anecdote
+            and sentence_count >= 1
             and not question_only
         ):
             return response

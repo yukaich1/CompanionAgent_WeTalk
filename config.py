@@ -7,11 +7,11 @@ class SlotBudgetConfig(BaseModel):
     thought_output: int = 400
     web_persona_context: int = 300
     web_reality_context: int = 300
-    semantic_memory: int = 200
-    episodic_memory: int = 300
+    layer1_memory: int = 300
+    layer2_memory: int = 260
+    layer3_memory: int = 200
     evidence_chunks: int = 400
     relation_state: int = 100
-
 
 class MemoryConfig(BaseModel):
     episodic_top_k: int = 5

@@ -60,6 +60,28 @@ VOICE_CARD_SCHEMA = {
     "required": ["character_voice_card"],
 }
 
+STYLE_EXAMPLES_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "style_examples": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "scene": {"type": "string"},
+                    "emotion": {"type": "string"},
+                    "rules_applied": {"type": "array", "items": {"type": "string"}},
+                    "source": {"type": "string"},
+                    "affinity_level": {"type": "string"},
+                },
+                "required": ["text"],
+            },
+        }
+    },
+    "required": ["style_examples"],
+}
+
 
 class PersonaSystem:
     def __init__(self, persona_name: str = "Ireina"):
@@ -153,6 +175,8 @@ class PersonaSystem:
         if not hasattr(self, "conflict_filter") or self.conflict_filter is None:
             self.conflict_filter = PersonaConflictFilter()
         self._setup_runtime_services()
+        self.character_voice_card = self._refine_character_voice_card(self.character_voice_card, self.base_template)
+        self.style_examples = self._refine_style_examples(self.style_examples, self.base_template)
         self._dedupe_storage()
         if self.index is None and self.entries:
             self.ingest_service.rebuild_index_from_entries()
@@ -285,9 +309,10 @@ class PersonaSystem:
 2. 删除任何证据里没有明确支持的新事实、新经历、新设定。
 3. 尤其不要凭空补充身世、过去经历、关系史、地点经历。
 4. 保留第一人称、角色口吻和简短自述感。
-5. 不要把某一句身份句、退场句、口头禅或固定句式机械重复成默认收尾。
-6. 长度控制在 40 到 120 字。
-7. 只输出 JSON。
+5. 它是“声音底稿”，不是角色登场台词；不要写成谜语、猜谜、自问自答式亮相或展示文案。
+6. 不要把某一句身份句、退场句、口头禅或固定句式机械重复成默认收尾。
+7. 长度控制在 35 到 90 字。
+8. 只输出 JSON。
 证据：
 {chr(10).join(f"- {line}" for line in evidence_lines[:18])}
 
@@ -306,6 +331,100 @@ class PersonaSystem:
             return refined or raw_card
         except Exception:
             return raw_card
+
+    def _refine_style_examples(self, examples: list[dict], base_template: dict) -> list[dict]:
+        cleaned_examples: list[dict] = []
+        for example in list(examples or []):
+            if not isinstance(example, dict):
+                continue
+            text = self._normalize_fact(example.get("text", ""), max_chars=200)
+            if not text or self._is_meta_commentary(text):
+                continue
+            cleaned_examples.append(
+                {
+                    "text": text,
+                    "scene": self._normalize_fact(example.get("scene", ""), max_chars=40),
+                    "emotion": self._normalize_fact(example.get("emotion", ""), max_chars=30),
+                    "rules_applied": dedupe(
+                        [self._normalize_fact(rule, max_chars=40) for rule in example.get("rules_applied", [])],
+                        limit=3,
+                    ),
+                    "source": self._normalize_fact(example.get("source", ""), max_chars=80),
+                    "affinity_level": self._normalize_fact(example.get("affinity_level", "any"), max_chars=12) or "any",
+                }
+            )
+        cleaned_examples = cleaned_examples[:12]
+        if not cleaned_examples:
+            return []
+
+        evidence_lines: list[str] = []
+        for dim in ("A_SPEECH_STYLE", "C_ADDRESS_AND_PAUSE", "D_EMOTION_PATH", "H_PERSONALITY", "J_RELATIONSHIP"):
+            dim_data = dict((base_template or {}).get(dim, {}) or {})
+            for rule in list(dim_data.get("rules", []) or [])[:3]:
+                clean = self._normalize_fact(rule, max_chars=100)
+                if clean:
+                    evidence_lines.append(clean)
+
+        prompt = f"""
+你要把一组角色示例台词收束成“更适合日常对话参考”的版本。
+
+要求：
+1. 保留角色说话底色、距离感、礼貌方式、情绪表达路径。
+2. 删除或改弱过度像“登场展示台词”的写法。
+3. 不要保留谜语、猜谜、自问自答式亮相、刻意吊着对方猜身份的句式。
+4. 示例要像真实场景里会自然说出口的话，而不是角色介绍页上的高光台词。
+5. 如果某条是自我介绍，也要改成直接、自然、完整的介绍。
+6. 只能依据原条目轻微收束，不要补新设定、新经历、新口头禅。
+7. 保留原来的 scene/emotion/rules_applied/source/affinity_level；如果 text 被收束，这些字段可以原样保留。
+8. 最多返回 8 条，宁缺毋滥。
+9. 只输出 JSON。
+
+角色规则线索：
+{chr(10).join(f"- {line}" for line in evidence_lines[:12]) or "（无）"}
+
+待收束示例：
+{chr(10).join(f"- {item['text']}" for item in cleaned_examples)}
+""".strip()
+        try:
+            payload = self.model.generate(
+                prompt,
+                return_json=True,
+                schema=STYLE_EXAMPLES_SCHEMA,
+                temperature=0.0,
+                max_tokens=520,
+            )
+            refined_items = list((payload or {}).get("style_examples", []) or [])
+            text_to_meta = {item["text"]: item for item in cleaned_examples if item.get("text")}
+            result: list[dict] = []
+            seen: set[str] = set()
+            for item in refined_items:
+                if not isinstance(item, dict):
+                    continue
+                text = self._normalize_fact(item.get("text", ""), max_chars=200)
+                if not text or text in seen or self._is_meta_commentary(text):
+                    continue
+                seen.add(text)
+                base = text_to_meta.get(text, {})
+                result.append(
+                    {
+                        "text": text,
+                        "scene": self._normalize_fact(item.get("scene", ""), max_chars=40) or base.get("scene", ""),
+                        "emotion": self._normalize_fact(item.get("emotion", ""), max_chars=30) or base.get("emotion", ""),
+                        "rules_applied": dedupe(
+                            [
+                                self._normalize_fact(rule, max_chars=40)
+                                for rule in list(item.get("rules_applied", []) or base.get("rules_applied", []))
+                            ],
+                            limit=3,
+                        ),
+                        "source": self._normalize_fact(item.get("source", ""), max_chars=80) or base.get("source", ""),
+                        "affinity_level": self._normalize_fact(item.get("affinity_level", ""), max_chars=12)
+                        or base.get("affinity_level", "any"),
+                    }
+                )
+            return result or cleaned_examples[:8]
+        except Exception:
+            return cleaned_examples[:8]
 
     def _fact_to_keywords(self, value):
         text = self._normalize_fact(value, max_chars=24)
@@ -376,7 +495,10 @@ class PersonaSystem:
             summary.get("character_voice_card", ""),
             normalized["base_template"],
         )
-        normalized["style_examples"] = self._normalize_style_examples(summary)
+        normalized["style_examples"] = self._refine_style_examples(
+            self._normalize_style_examples(summary),
+            normalized["base_template"],
+        )
         normalized["display_keywords"] = dedupe(
             [
                 kw

@@ -11,7 +11,7 @@ from knowledge.persona_shared import DISPLAY_KEYWORD_LIMIT, PERSONA_SUMMARY_SCHE
 from knowledge.persona_summary_refiners import (
     build_background_extraction_prompt,
     build_display_keywords_prompt,
-    build_key_experience_selection_prompt,
+    build_key_experience_verification_prompt,
     build_keyword_selection_prompt,
 )
 from knowledge.story_segmentation import segment_story_section
@@ -61,15 +61,6 @@ BACKGROUND_EXPERIENCE_SCHEMA = {
     },
     "required": ["key_experiences"],
 }
-
-KEY_EXPERIENCE_INDEX_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "indices": {"type": "array", "items": {"type": "integer"}},
-    },
-    "required": ["indices"],
-}
-
 
 class PersonaIngestService:
     def __init__(self, system):
@@ -148,8 +139,6 @@ class PersonaIngestService:
     def _looks_like_display_keyword(self, token: str) -> bool:
         value = self._normalize_keyword(token, max_chars=12)
         if not value:
-            return False
-        if len(value) < 2 or len(value) > 8:
             return False
         if "\n" in value or "  " in value:
             return False
@@ -262,6 +251,17 @@ class PersonaIngestService:
         normalized = [item for item in normalized if item and self._looks_like_display_keyword(item)]
         return dedupe(normalized, limit=DISPLAY_KEYWORD_LIMIT)
 
+    def _keyword_fallbacks(self, summary: dict) -> list[str]:
+        summary_dict = self.system._summary_to_dict(summary)
+        fallbacks = [
+            self._normalize_keyword(item, max_chars=12)
+            for item in list(summary_dict.get("display_keywords", []) or [])
+        ]
+        fallbacks = [item for item in fallbacks if item and self._looks_like_display_keyword(item)]
+        if fallbacks:
+            return dedupe(fallbacks, limit=DISPLAY_KEYWORD_LIMIT)
+        return self._candidate_keyword_pool(summary_dict)
+
     def _finalize_keyword_candidates(self, summary: dict, raw_candidates: list[str]) -> list[str]:
         candidates = [
             self._normalize_keyword(item, max_chars=12)
@@ -296,8 +296,7 @@ class PersonaIngestService:
     def refine_display_keywords(self, summary: dict, raw_text: str) -> list[str]:
         summary_dict = self.system._summary_to_dict(summary)
         llm_keywords = self._llm_keyword_candidates(summary_dict)
-        direct_keywords = self._candidate_keyword_pool(summary_dict)
-        candidates = [item for item in [*llm_keywords, *direct_keywords] if item]
+        candidates = list(llm_keywords or [])
         candidates = dedupe(
             [
                 self._normalize_keyword(item, max_chars=12)
@@ -307,7 +306,7 @@ class PersonaIngestService:
             limit=24,
         )
         if not candidates:
-            return []
+            return self._keyword_fallbacks(summary_dict)
 
         source_evidence = self.system._prepare_summary_source(raw_text, max_chars=2400)
         candidate_text = "\n".join(f"- {item}" for item in candidates)
@@ -327,7 +326,7 @@ class PersonaIngestService:
             normalized = [item for item in normalized if item and self._looks_like_display_keyword(item)]
             return dedupe(normalized or candidates, limit=DISPLAY_KEYWORD_LIMIT)
         except Exception:
-            return self._finalize_keyword_candidates(summary_dict, candidates)
+            return self._finalize_keyword_candidates(summary_dict, candidates) or self._keyword_fallbacks(summary_dict)
 
     def _extract_background_key_experiences(self, profile: dict, source_text: str) -> list[str]:
         profile_lines = [
@@ -335,120 +334,38 @@ class PersonaIngestService:
             for key, value in dict(profile or {}).items()
             if self.system._normalize_fact(value, max_chars=80)
         ]
-
-        segments: list[str] = []
-        raw_sentences = re.split(r"(?<=[。！？；\n])", str(source_text or ""))
-        for sentence in raw_sentences:
-            clean_sentence = self.system._normalize_fact(sentence, max_chars=160)
-            if not clean_sentence:
-                continue
-            if len(clean_sentence) < 12:
-                continue
-            if re.match(r"^(并|但|而|后来|于是|然后|不过|只是|也|还|又)", clean_sentence):
-                continue
-            segments.append(clean_sentence)
-
-        candidates: list[str] = []
-        for sentence in segments:
-            if not sentence or len(sentence) < 12:
-                continue
-            if self.system._is_meta_commentary(sentence):
-                continue
-            candidates.append(sentence)
-
-        window_candidates: list[str] = []
-        for index, sentence in enumerate(candidates):
-            window_candidates.append(sentence)
-            if index + 1 < len(candidates):
-                merged = f"{sentence} {candidates[index + 1]}".strip()
-                merged = self.system._normalize_fact(merged, max_chars=220)
-                if merged and not self.system._is_meta_commentary(merged):
-                    window_candidates.append(merged)
-        candidates = dedupe(window_candidates, limit=24)
-
-        if candidates:
-            prompt = build_key_experience_selection_prompt(profile_lines, candidates)
-            schema = KEY_EXPERIENCE_INDEX_SCHEMA
-        else:
-            prompt = build_background_extraction_prompt(profile_lines, source_text)
-            schema = BACKGROUND_EXPERIENCE_SCHEMA
-
         try:
             payload = self.system.model.generate(
-                prompt,
+                build_background_extraction_prompt(profile_lines, source_text),
                 return_json=True,
-                schema=schema,
+                schema=BACKGROUND_EXPERIENCE_SCHEMA,
                 temperature=0.0,
                 max_tokens=360,
             )
         except Exception:
             return []
 
-        if candidates:
-            picked_indices = [
-                int(item)
-                for item in list((payload or {}).get("indices", []) or [])
-                if isinstance(item, int) or (isinstance(item, str) and str(item).isdigit())
-            ]
-            experiences = [candidates[index - 1] for index in picked_indices if 1 <= index <= len(candidates)]
-            if not experiences:
-                fallback_prompt = build_background_extraction_prompt(profile_lines, source_text)
-                try:
-                    fallback_payload = self.system.model.generate(
-                        fallback_prompt,
-                        return_json=True,
-                        schema=BACKGROUND_EXPERIENCE_SCHEMA,
-                        temperature=0.0,
-                        max_tokens=360,
-                    )
-                    raw_fallback = [
-                        self.system._normalize_fact(item, max_chars=160)
-                        for item in list((fallback_payload or {}).get("key_experiences", []) or [])
-                    ]
-                    experiences = [item for item in raw_fallback if item in candidates]
-                except Exception:
-                    experiences = []
-        else:
-            experiences = [
-                self.system._normalize_fact(item, max_chars=160)
-                for item in list((payload or {}).get("key_experiences", []) or [])
-            ]
-
+        experiences = [
+            self.system._normalize_fact(item, max_chars=160)
+            for item in list((payload or {}).get("key_experiences", []) or [])
+        ]
         experiences = dedupe([item for item in experiences if item], limit=5)
         experiences = self._prune_overlapping_experiences(experiences)
         if not experiences or not profile_lines:
             return experiences
-
-        verification_prompt = f"""
-你要从候选条目里确认哪些内容真的属于“背景关键经历”。
-要求：
-1. 只保留成长起点、启蒙、资格取得、拜师修行、重大试炼、重要约定、出发动机、关键转折。
-2. 删除纯身份档案、称号、出生地、外貌、装备、一般偏好、泛泛性格概括。
-3. 如果一条只是“是谁、来自哪里、叫什么、长什么样”，它不是关键经历。
-4. 宁缺毋滥。
-5. 如果一条把“身份档案”和“真正经历”硬拼在一起，也不要选；只保留更纯粹、更像单一经历单元的条目。
-6. 只输出 JSON。
-
-身份档案：
-{chr(10).join(f"- {line}" for line in profile_lines[:8])}
-
-候选条目：
-{chr(10).join(f"{index}. {item}" for index, item in enumerate(experiences, start=1))}
-""".strip()
         try:
             verification = self.system.model.generate(
-                verification_prompt,
+                build_key_experience_verification_prompt(profile_lines, experiences),
                 return_json=True,
-                schema=KEY_EXPERIENCE_INDEX_SCHEMA,
+                schema=BACKGROUND_EXPERIENCE_SCHEMA,
                 temperature=0.0,
                 max_tokens=220,
             )
-            verified_indices = [
-                int(item)
-                for item in list((verification or {}).get("indices", []) or [])
-                if isinstance(item, int) or (isinstance(item, str) and str(item).isdigit())
+            verified = [
+                self.system._normalize_fact(item, max_chars=160)
+                for item in list((verification or {}).get("key_experiences", []) or [])
             ]
-            verified = [experiences[index - 1] for index in verified_indices if 1 <= index <= len(experiences)]
+            verified = [item for item in verified if item in experiences]
             return self._prune_overlapping_experiences(dedupe(verified or experiences, limit=5))
         except Exception:
             return experiences
@@ -528,8 +445,9 @@ class PersonaIngestService:
     def selected_keyword_candidates(self, summary: dict) -> list[str]:
         summary_dict = self.system._summary_to_dict(summary)
         llm_keywords = self._llm_keyword_candidates(summary_dict)
-        direct_keywords = self._candidate_keyword_pool(summary_dict)
-        return self._finalize_keyword_candidates(summary_dict, [*llm_keywords, *direct_keywords])
+        if llm_keywords:
+            return self._finalize_keyword_candidates(summary_dict, llm_keywords) or llm_keywords
+        return self._keyword_fallbacks(summary_dict)
 
     def get_display_keywords(self, limit: int = DISPLAY_KEYWORD_LIMIT) -> list[str]:
         return dedupe(self.system.display_keywords, limit=limit)

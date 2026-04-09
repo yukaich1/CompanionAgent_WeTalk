@@ -22,7 +22,7 @@ def summarize_personality(openness, conscientious, extrovert, agreeable, neuroti
     if extrovert >= 0.35:
         traits.append("表达主动")
     elif extrovert <= -0.2:
-        traits.append("表达克制")
+        traits.append("表达偏内收")
     if agreeable >= 0.45:
         traits.append("整体温和")
     elif agreeable <= -0.1:
@@ -35,7 +35,7 @@ def summarize_personality(openness, conscientious, extrovert, agreeable, neuroti
         traits.append("容易在细节上紧张")
     elif neurotic <= 0:
         traits.append("情绪相对稳定")
-    return "、".join(traits) if traits else "表达自然，语气平稳"
+    return "、".join(traits) if traits else "表达自然"
 
 
 class PersonalitySystem:

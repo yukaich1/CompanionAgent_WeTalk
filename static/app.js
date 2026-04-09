@@ -239,7 +239,7 @@ function renderPreviewKeywords(preview) {
   }
 
   if (elements.previewKeywordHint) {
-    elements.previewKeywordHint.textContent = `请从分析师 prompt 生成的关键词中选择 ${PREVIEW_KEYWORD_SELECTION_LIMIT} 个高权重标签（当前 ${state.previewSelectedKeywords.length}/${PREVIEW_KEYWORD_SELECTION_LIMIT}）。`;
+    elements.previewKeywordHint.textContent = `请选择 ${PREVIEW_KEYWORD_SELECTION_LIMIT} 个人设关键词（当前 ${state.previewSelectedKeywords.length}/${PREVIEW_KEYWORD_SELECTION_LIMIT}）。`;
   }
 
   elements.previewKeywords.innerHTML = keywords.map((keyword) => {
@@ -267,7 +267,7 @@ function renderPreviewKeywords(preview) {
       }
       state.previewSelectedKeywords = selected;
       if (elements.previewKeywordHint) {
-        elements.previewKeywordHint.textContent = `请从分析师 prompt 生成的关键词中选择 ${PREVIEW_KEYWORD_SELECTION_LIMIT} 个高权重标签（当前 ${state.previewSelectedKeywords.length}/${PREVIEW_KEYWORD_SELECTION_LIMIT}）。`;
+        elements.previewKeywordHint.textContent = `请选择 ${PREVIEW_KEYWORD_SELECTION_LIMIT} 个人设关键词（当前 ${state.previewSelectedKeywords.length}/${PREVIEW_KEYWORD_SELECTION_LIMIT}）。`;
       }
       elements.previewKeywords.querySelectorAll(".keyword-choice").forEach((label) => {
         const checkbox = label.querySelector("input[type='checkbox']");

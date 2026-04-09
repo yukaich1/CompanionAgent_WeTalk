@@ -8,7 +8,7 @@ from knowledge.knowledge_source import DeduplicatedContext, MemoryRecallResult, 
 class RecallDeduplicator:
     def dedup(self, persona_result: PersonaRecallResult, memory_result: MemoryRecallResult) -> DeduplicatedContext:
         persona_chunks = [chunk for chunk in (persona_result.evidence_chunks or [persona_result.integrated_context]) if chunk]
-        for record in memory_result.episodic_records:
+        for record in memory_result.episode_records:
             for chunk in persona_chunks:
                 if self._should_reference_only(record.content, chunk):
                     record.inject_mode = "reference_only"

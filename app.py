@@ -244,6 +244,7 @@ def _build_snapshot() -> dict:
     persona_chunk_count = len(getattr(getattr(persona_state, "evidence_vault", None), "parent_chunks", []) or [])
     if not persona_chunk_count:
         persona_chunk_count = _ai_system.persona_system.chunk_count
+    persona_ready = bool(_ai_system._persona_foundation_available())
 
     has_user_conversation = any(message.get("role") == "user" for message in _ai_system.get_message_history(False))
     if has_user_conversation and emotion_state is not None:
@@ -274,6 +275,7 @@ def _build_snapshot() -> dict:
             "moodDescription": mood_description,
             "friendliness": friendliness,
             "affinity": affinity,
+            "personaReady": persona_ready,
             "personaChunks": persona_chunk_count,
             "keywords": persona_keywords,
             "personaStatus": _ai_system.persona_system.get_status().dict(),
@@ -340,7 +342,7 @@ def api_chat():
                 history = _ai_system.get_message_history(False)
                 if history and history[-1].get("role") != "assistant":
                     _ai_system.buffer.add_message("assistant", fallback_reply)
-                _append_activity(_frontend_state, f"{_ai_system.config.name} 鐨勪竴杞璇濇湭瀹屾暣瀹屾垚")
+                _append_activity(_frontend_state, f"{_ai_system.config.name} 的一轮对话未完整完成")
                 _save_ai()
                 return _json_ok(
                     assistant={"content": fallback_reply, "bubbles": _split_bubbles(fallback_reply)},
@@ -403,7 +405,7 @@ def api_persona_text():
             )
         except Exception as exc:
             return _json_error(str(exc))
-        _append_activity(_frontend_state, f"宸叉牴鎹枃鏈祫鏂欑敓鎴?{persona_name} 鐨勫緟纭棰勮")
+        _append_activity(_frontend_state, f"已根据文本资料生成 {persona_name} 的待确认预览")
         return _json_ok(preview=preview.dict(), snapshot=_build_snapshot())
 
 
@@ -428,7 +430,7 @@ def api_persona_preview():
             )
         except Exception as exc:
             return _json_error(str(exc))
-        _append_activity(_frontend_state, f"宸茬敓鎴?{(persona_name or _ai_system.config.name)} 鐨勫緟纭棰勮")
+        _append_activity(_frontend_state, f"已生成 {(persona_name or _ai_system.config.name)} 的待确认预览")
         return _json_ok(preview=preview.dict(), snapshot=_build_snapshot())
 
 

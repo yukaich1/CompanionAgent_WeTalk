@@ -750,7 +750,8 @@ button:hover {
 
 .preview-panel,
 .preview-snippet,
-.preview-template-block {
+.preview-template-block,
+.preview-material-block {
   border-radius: 18px;
 }
 
@@ -774,6 +775,24 @@ button:hover {
   border: 1px solid var(--line-soft);
 }
 
+.preview-material-block {
+  margin-top: 14px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--line-soft);
+}
+
+.preview-scroll-shell {
+  max-height: min(40vh, 420px);
+  overflow: auto;
+  padding-right: 6px;
+  min-height: 0;
+}
+
+.preview-scroll-shell-material {
+  max-height: min(34vh, 360px);
+}
+
 .preview-base-template,
 .preview-text {
   white-space: pre-wrap;
@@ -792,7 +811,6 @@ button:hover {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  margin-top: 14px;
 }
 
 .preview-snippet {
@@ -919,5 +937,10 @@ button:hover {
 
   .avatar-editor-body {
     grid-template-columns: 1fr;
+  }
+
+  .preview-scroll-shell,
+  .preview-scroll-shell-material {
+    max-height: 260px;
   }
 }

@@ -9,7 +9,10 @@ from pydantic import BaseModel, Field
 
 class EpisodicRecord(BaseModel):
     record_id: str
-    event_summary: str
+    summary: str
+    verbatim_excerpt: str = ""
+    user_text: str = ""
+    assistant_text: str = ""
     perspective: Literal["CHARACTER_FIRST", "NARRATOR"] = "CHARACTER_FIRST"
     emotional_valence: float = Field(default=0.0, ge=-1.0, le=1.0)
     emotional_intensity: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -20,8 +23,33 @@ class EpisodicRecord(BaseModel):
     last_recalled_at: datetime | None = None
     recall_count: int = 0
     topic_tags: list[str] = Field(default_factory=list)
+    memory_type: str = ""
+    topic_room: str = ""
+    scope: str = ""
+    source_session_id: str = ""
+    source_turn_index: int = 0
     promoted: bool = False
     conflicted: bool = False
+
+    def recall_text(self) -> str:
+        excerpt = str(self.verbatim_excerpt or "").strip()
+        if excerpt:
+            return excerpt
+
+        user_text = str(self.user_text or "").strip()
+        assistant_text = str(self.assistant_text or "").strip()
+        if user_text or assistant_text:
+            parts = []
+            if user_text:
+                parts.append(f"User: {user_text}")
+            if assistant_text:
+                parts.append(f"Assistant: {assistant_text}")
+            return "\n".join(parts).strip()
+
+        return str(self.summary or "").strip()
+
+    def display_text(self) -> str:
+        return str(self.summary or "").strip() or self.recall_text()
 
 
 class SemanticRecord(BaseModel):
@@ -45,8 +73,8 @@ class RelationState(BaseModel):
 
 
 class MemorySystemState(BaseModel):
-    episodic_records: list[EpisodicRecord] = Field(default_factory=list)
-    semantic_records: list[SemanticRecord] = Field(default_factory=list)
+    episode_records: list[EpisodicRecord] = Field(default_factory=list)
+    stable_records: list[SemanticRecord] = Field(default_factory=list)
     relation_state: RelationState = Field(default_factory=RelationState)
 
 

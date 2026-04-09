@@ -5,6 +5,11 @@ from datetime import datetime
 
 from config import DEFAULT_CONFIG
 from diagnostics.conflict_log import ConflictLog
+from memory.memory_taxonomy import (
+    build_verbatim_excerpt,
+    classify_memory_taxonomy,
+    normalize_topic_tags,
+)
 from memory.state_models import EpisodicRecord, MemorySystemState, RelationState, SemanticRecord
 
 
@@ -26,29 +31,62 @@ class MemoryWriter:
     def remember(
         self,
         state: MemorySystemState,
-        event_summary: str,
+        summary: str,
+        user_text: str = "",
+        assistant_text: str = "",
+        verbatim_excerpt: str = "",
         topic_tags: list[str] | None = None,
         relation_impact: dict[str, float] | None = None,
         importance: float = 0.5,
         character_emotion: str = "neutral",
+        memory_type: str = "",
+        topic_room: str = "",
+        scope: str = "",
+        source_session_id: str = "",
+        source_turn_index: int = 0,
     ) -> MemorySystemState:
+        normalized_tags = normalize_topic_tags(topic_tags)
+        resolved_summary = str(summary or "").strip()
+        resolved_verbatim = str(verbatim_excerpt or "").strip() or build_verbatim_excerpt(
+            user_text=user_text,
+            assistant_text=assistant_text,
+        )
+        taxonomy = {}
+        if not str(memory_type or "").strip() or not str(topic_room or "").strip():
+            taxonomy = classify_memory_taxonomy(
+                resolved_summary,
+                user_text=user_text,
+                assistant_text=assistant_text,
+                topic_tags=normalized_tags,
+                llm=self.llm,
+            )
+        resolved_memory_type = str(memory_type or "").strip() or str(taxonomy.get("memory_type", "") or "").strip()
+        resolved_topic_room = str(topic_room or "").strip() or str(taxonomy.get("topic_room", "") or "").strip()
         record = EpisodicRecord(
             record_id=str(uuid.uuid4()),
-            event_summary=event_summary,
+            summary=resolved_summary,
+            verbatim_excerpt=resolved_verbatim,
+            user_text=str(user_text or "").strip(),
+            assistant_text=str(assistant_text or "").strip(),
             emotional_intensity=max(0.0, min(1.0, importance)),
             character_emotion=character_emotion,
             relation_impact=relation_impact or {},
             strength=max(0.3, min(0.8, importance)),
-            topic_tags=topic_tags or [],
+            topic_tags=normalized_tags,
+            memory_type=resolved_memory_type,
+            topic_room=resolved_topic_room,
+            scope=str(scope or "").strip(),
+            source_session_id=str(source_session_id or "").strip(),
+            source_turn_index=max(0, int(source_turn_index or 0)),
         )
-        state.episodic_records.append(record)
+        state.episode_records.append(record)
         self._update_relation_state(state.relation_state, relation_impact or {})
         self._try_promote_semantic(state)
         return state
 
     def _try_promote_semantic(self, state: MemorySystemState) -> None:
         threshold = DEFAULT_CONFIG.memory.semantic_upgrade_threshold
-        unpromoted = [record for record in state.episodic_records if not record.promoted]
+        unpromoted = [record for record in state.episode_records if not record.promoted]
         if len(unpromoted) < threshold:
             return
 
@@ -62,14 +100,14 @@ class MemoryWriter:
             confidence=semantic_payload["confidence"],
             last_updated_at=datetime.now(),
         )
-        state.semantic_records.append(semantic)
+        state.stable_records.append(semantic)
         for record in batch:
             record.promoted = True
 
     def _summarize_semantic_batch(self, batch) -> dict:
         fallback = {
-            "content": " | ".join(record.event_summary for record in batch),
-            "domain": batch[0].topic_tags[0] if batch and batch[0].topic_tags else "user_relation",
+            "content": " | ".join(record.display_text() for record in batch),
+            "domain": batch[0].memory_type if batch and batch[0].memory_type else "user_relation",
             "confidence": min(0.5, DEFAULT_CONFIG.memory.semantic_confidence_step_cap * len(batch)),
         }
         if self.llm is None or not batch:
@@ -77,13 +115,14 @@ class MemoryWriter:
 
         evidence_lines = []
         for idx, record in enumerate(batch, start=1):
-            summary = str(record.event_summary or "").strip()
+            summary = str(record.display_text() or "").strip()
             if not summary:
                 continue
             tags = "、".join(list(record.topic_tags or [])[:5]) or "无"
             evidence_lines.append(
                 f"{idx}. 事件: {summary}\n"
                 f"   标签: {tags}\n"
+                f"   类型: {record.memory_type}/{record.topic_room}\n"
                 f"   情绪: {record.character_emotion}"
             )
         if not evidence_lines:

@@ -55,6 +55,14 @@ Wetalk 适合以下使用方式：
 - 当前对话主题
 - 部分长期偏好或互动痕迹
 
+当前记忆已经不是单层拼接，而是明确分为多层：
+- `L0 Identity`：角色核心身份与基础自我介绍锚点
+- `L1 Stable Memory`：长期稳定记忆，如关系状态、持续偏好、稳定话题摘要
+- `L2 Topic Recall`：当前话题相关的局部记忆召回
+- `L3 Deep Recall`：更深层、按需使用的补充记忆
+
+这几层不会无差别全部塞进 prompt，而是按用途组织后再装配。
+
 ### 4. 工具能力
 
 当前已支持：
@@ -189,6 +197,96 @@ python app.py
 - 情绪互动：优先接住情绪，再继续对话
 - 普通闲聊：优先延续上下文和角色底色
 
+## 当前架构
+
+### 1. Prompt / Context / Harness 分工
+
+当前项目不是只靠 prompt 维持角色，而是分成三层：
+
+- `Prompt engineering`
+  负责角色说话方式、语气、边界和回答模式约束
+- `Context engineering`
+  负责把 persona、memory、tool evidence 分层装进本轮上下文
+- `Harness engineering`
+  负责主编排、路由、工具调用、证据门控、状态保存和回退
+
+这三层分别对应：
+- “怎么说”
+- “基于什么说”
+- “什么时候该说 / 不该说”
+
+### 2. 统一证据模型
+
+persona 和记忆现在都会先转成统一 evidence 视图，再进入上下文装配。  
+这意味着系统不会再把不同来源的资料直接平铺，而是先统一成一套证据对象，再按层使用。
+
+主要来源包括：
+- persona integrated context
+- persona evidence chunks
+- memory episode records
+- stable memory records
+- relation state
+- 外部工具结果
+
+### 3. 记忆写入与检索
+
+长期记忆现在包含两种主要内容：
+
+- `episode_records`
+  保留对话事件摘要、原文片段、主题标签、来源会话等信息
+- `stable_records`
+  由多条事件逐步提炼出的长期稳定记忆
+
+写入时：
+- 会保存 `summary`
+- 会尽量保存 `verbatim_excerpt`
+- 会补充 `memory_type / topic_room / scope / source_session_id`
+
+检索时：
+- 优先按 metadata 过滤候选
+- 再做 episode recall
+- 再补 stable memory 和 relation state
+- 最终进入 `L1/L2/L3` 分层装配
+
+### 4. Evidence Gate
+
+系统对高风险回答增加了证据门控，不再只靠 prompt 自行兜底。
+
+会重点门控的场景包括：
+- 自我介绍
+- 角色事实
+- 角色故事
+- 外部事实
+- 用户追问历史记忆
+
+如果证据不足，系统会选择保守回答，而不是直接编造。
+
+### 5. Memory Taxonomy
+
+`memory_type` 和 `topic_room` 已经不再使用关键词硬编码规则。  
+当前由 LLM 负责判断记忆类型和主题房间，并且写入路径会复用一次 taxonomy 结果，避免重复分类调用。
+
+## 运行链路
+
+可以把一次回复大致理解为：
+
+1. 路由问题类型
+2. 检索 persona / memory / tool evidence
+3. 去重并统一成 evidence items
+4. 组装 `L0/L1/L2/L3`
+5. 做 evidence gate 检查
+6. 调用回复生成器输出角色化回答
+
+对应核心文件：
+- [`app.py`](./app.py)：Web 入口
+- [`main.py`](./main.py)：主编排器
+- [`context/context_assembler.py`](./context/context_assembler.py)：上下文装配
+- [`context/memory_layers.py`](./context/memory_layers.py)：记忆分层
+- [`context/evidence_adapter.py`](./context/evidence_adapter.py)：统一证据适配
+- [`memory/memory_writer.py`](./memory/memory_writer.py)：记忆写入
+- [`memory/memory_rag_engine.py`](./memory/memory_rag_engine.py)：记忆检索
+- [`response_generator.py`](./response_generator.py)：回复生成
+
 ## 项目结构
 
 如果你只是普通使用者，可以跳过这一节。  
@@ -239,6 +337,17 @@ Ireina/
 ### 3. 为什么有时回答会偏保守？
 
 系统会尽量避免在没有证据时编造角色经历或现实事实，所以当资料不足或检索不到内容时，回答会更谨慎。
+
+### 4. 为什么新环境里启动会缺依赖？
+
+当前依赖已经写入 [`requirements.txt`](./requirements.txt)。  
+如果你重建了 `.venv`，请重新执行一次：
+
+```powershell
+pip install -r requirements.txt
+```
+
+项目当前依赖 `faiss-cpu`，如果漏装会影响 persona / memory 检索模块启动。
 
 ## 注意事项
 
