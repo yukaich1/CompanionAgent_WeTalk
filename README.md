@@ -312,10 +312,6 @@ Ireina/
 
 ![聊天界面演示](./assets/141804.png)
 
-<p align="center">
-  <img src="./assets/142919.png" alt="角色配置 1" width="48%">
-  <img src="./assets/143025.png" alt="角色配置 2" width="48%">
-</p>
 
 ## 常见问题
 
