@@ -1,0 +1,30 @@
+﻿.vscode/
+*.log
+*.log
+# Keep only image assets under assets/
+assets/**
+!assets/
+!assets/**/*.png
+!assets/**/*.jpg
+!assets/**/*.jpeg
+!assets/**/*.webp
+!assets/**/*.gif
+!assets/**/*.bmp
+!assets/**/*.svg
+# Runtime state / local persistence
+ai_state.json
+ai_state.derived.json
+ai_state.trace.json
+ai_state.transcript.json
+persona_state.json
+memory_state.json
+frontend_state.json
+tmp_simulated_session.json
+tmp_simulated_session.derived.json
+tmp_simulated_session.trace.json
+tmp_simulated_session.transcript.json
+# Local vector store / runtime uploads
+.qdrant/
+uploads/**
+!uploads/
+!uploads/.gitkeep
