@@ -1,6 +1,25 @@
-﻿.vscode/
+.venv/
+venv/
+env/
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+node_modules/
+dist/
+build/
+
+.env
+.env.*
+!.env.example
+
+.DS_Store
+.idea/
+.vscode/
 *.log
-*.log
+
 # Keep only image assets under assets/
 assets/**
 !assets/
@@ -11,6 +30,7 @@ assets/**
 !assets/**/*.gif
 !assets/**/*.bmp
 !assets/**/*.svg
+
 # Runtime state / local persistence
 ai_state.json
 ai_state.derived.json
@@ -23,6 +43,7 @@ tmp_simulated_session.json
 tmp_simulated_session.derived.json
 tmp_simulated_session.trace.json
 tmp_simulated_session.transcript.json
+
 # Local vector store / runtime uploads
 .qdrant/
 uploads/**
