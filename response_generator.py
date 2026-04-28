@@ -4,7 +4,11 @@ import copy
 import re
 from collections.abc import Mapping
 
-from ai_runtime_support import build_persona_injection_prompt, relation_state_summary
+from ai_runtime_support import (
+    build_persona_dynamic_prompt,
+    build_persona_static_prompt,
+    relation_state_summary,
+)
 from context.context_selector import ContextSelector
 from prompting.evidence_pack_builder import EvidencePackBuilder
 from prompting.prompt_composer import PromptComposer
@@ -198,13 +202,27 @@ class ResponseGenerator:
         memory_slots: Mapping[str, object] | None = None,
     ) -> DynamicStateView:
         thought_data = thought_data or {}
+        recall_seed = "\n".join(
+            part
+            for part in [
+                str(thought_data.get("surface_intent", "") or "").strip(),
+                str(thought_data.get("latent_need", "") or "").strip(),
+                self._recent_dialogue_block(max_messages=3),
+            ]
+            if part and part != "None"
+        ).strip()
+        memory_tiers = self.system.memory_system.build_memory_tiers(query=recall_seed)
+        legacy_memory_snapshot = self._memory_snapshot(response_mode, memory_slots)
         return DynamicStateView(
             mood=str(thought_data.get("emotion", "平静") or "平静"),
             mood_detail=self.system.emotion_system.get_mood_prompt(),
             relation_state=relation_state_summary(self.system),
             user_emotion_hint=self._user_emotion_hint(thought_data),
             recent_dialogue=self._recent_dialogue_block(),
-            memory_snapshot=self._memory_snapshot(response_mode, memory_slots),
+            memory_snapshot=legacy_memory_snapshot,
+            hot_memory_index=str(memory_tiers.get("hot_memory_index", "") or "").strip() or legacy_memory_snapshot,
+            warm_memory_context=str(memory_tiers.get("warm_memory_context", "") or "").strip() or "None",
+            cold_memory_hint=str(memory_tiers.get("cold_memory_hint", "") or "").strip() or "None",
             session_context=str(self.system.session_context_manager.render() or "").strip() or "None",
         )
 
@@ -225,7 +243,8 @@ class ResponseGenerator:
         thought_data = thought_data or {}
         normalized_mode = str(response_mode or "casual").strip() or "casual"
         memory_sensitive = self._is_memory_recall_prompt(user_input, normalized_mode)
-        style_prompt = str(build_persona_injection_prompt(self.system, thought_data) or "").strip() or "None"
+        static_persona_prompt = str(build_persona_static_prompt(self.system) or "").strip() or "None"
+        dynamic_persona_prompt = str(build_persona_dynamic_prompt(self.system, thought_data) or "").strip() or "None"
         evidence, selected_memory_layers = self.evidence_pack_builder.build(
             response_mode=normalized_mode,
             user_input=user_input,
@@ -239,13 +258,15 @@ class ResponseGenerator:
             response_mode=normalized_mode,
             persona_focus=str(persona_focus or "general").strip() or "general",
             character_name=self.system.config.name,
-            style_prompt=style_prompt,
+            style_prompt=dynamic_persona_prompt,
             dynamic_state=self._dynamic_state(thought_data, normalized_mode, memory_slots),
             evidence=evidence,
             response_contract=str(response_contract or "").strip(),
             persona_focus_contract=str(persona_focus_contract or "").strip(),
             metadata={
                 "thought_data": thought_data,
+                "static_persona_prompt": static_persona_prompt,
+                "dynamic_persona_prompt": dynamic_persona_prompt,
                 "selected_memory_layers": selected_memory_layers,
                 "memory_sensitive": memory_sensitive,
                 "working_memory_preview": self._recent_dialogue_block(),
@@ -259,13 +280,13 @@ class ResponseGenerator:
         )
 
     def _fallback_response(self, context: TurnRuntimeContext, plan: ResponsePlan) -> str:
-        prompt = self.prompt_composer.compose(self._build_prompt_sections(context, plan), fallback=True)
-        return self._generate(prompt, max_tokens=min(plan.max_tokens, 420), temperature=0.38, isolated=False)
+        assembly = self.prompt_composer.compose(self._build_prompt_sections(context, plan), fallback=True)
+        return self._generate(assembly.combined_prompt, max_tokens=min(plan.max_tokens, 420), temperature=0.38, isolated=False)
 
     def _build_prompt_sections(self, context: TurnRuntimeContext, plan: ResponsePlan) -> PromptSections:
         stable = self.stable_prompt_builder.build(
             character_name=context.character_name,
-            style_prompt=context.style_prompt,
+            static_persona_prompt=str((context.metadata or {}).get("static_persona_prompt", "") or "").strip(),
         )
         return PromptSections(
             stable=stable,
@@ -317,6 +338,7 @@ class ResponseGenerator:
         )
         context = self.context_selector.select(context)
         plan = self.response_planner.build(context)
+        assembly = self.prompt_composer.compose(self._build_prompt_sections(context, plan), fallback=False)
         self.system.last_debug_info = {
             **(self.system.last_debug_info or {}),
             "responsePlan": {
@@ -332,11 +354,18 @@ class ResponseGenerator:
                     *(
                         ["working_memory", "session_context"]
                         if bool(context.metadata.get("memory_sensitive"))
-                        else []
+                    else []
                     ),
                 ],
                 "evidencePreview": self.system._truncate_for_prompt(plan.evidence_text, 220),
                 "memoryLayers": list(context.metadata.get("selected_memory_layers", []) or []),
+                "promptCache": {
+                    "static_cache_key": assembly.cache_key,
+                    "boundary_marker": assembly.boundary_marker,
+                    "dynamic_prompt_chars": len(assembly.dynamic_prompt),
+                    "system_prompt_chars": len(assembly.system_prompt),
+                    "compaction_report": dict(assembly.compaction_report or {}),
+                },
             },
             "selectedContextView": dict((context.metadata or {}).get("selected_context_view", {}) or {}),
             "persistenceBoundary": dict((context.metadata or {}).get("persistence_boundary", {}) or {}),
@@ -345,12 +374,11 @@ class ResponseGenerator:
         if plan.evidence_required and not plan.evidence_ready:
             return self._fallback_response(context, plan)
 
-        prompt = self.prompt_composer.compose(self._build_prompt_sections(context, plan), fallback=False)
         if plan.allow_continuation:
             return self._generate_with_continuation(
-                prompt,
+                assembly.combined_prompt,
                 max_tokens=plan.max_tokens,
                 temperature=plan.temperature,
                 continuation_max_tokens=plan.continuation_max_tokens,
             )
-        return self._generate(prompt, max_tokens=plan.max_tokens, temperature=plan.temperature, isolated=False)
+        return self._generate(assembly.combined_prompt, max_tokens=plan.max_tokens, temperature=plan.temperature, isolated=False)

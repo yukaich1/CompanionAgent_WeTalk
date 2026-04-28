@@ -4,9 +4,12 @@ import re
 from datetime import datetime
 
 from knowledge.knowledge_source import SearchMode
-from persona_prompting import build_base_template_injection_prompt
+from persona_prompting import (
+    build_base_template_dynamic_prompt,
+    build_base_template_static_prompt,
+)
 from reasoning.emotion_state_machine import EmotionSignal
-from utils import format_date, format_memories_to_string, format_time, time_since_last_message_string
+from utils import format_date, format_time, time_since_last_message_string
 
 
 TURN_IMPACT_SCHEMA = {
@@ -90,110 +93,32 @@ def build_identity_reference(system) -> str:
     return "\n".join(lines[:10]).strip()
 
 
-def build_persona_injection_prompt(system, thought_data: dict) -> str:
+def build_persona_static_prompt(system) -> str:
     persona = system.persona_system
-    current_emotion = str(thought_data.get("emotion", "平静") or "平静").strip() or "平静"
-    affinity_level = _affinity_level_for_prompt(system)
     prompt = str(
-        build_base_template_injection_prompt(
+        build_base_template_static_prompt(
             character_name=system.config.name,
             character_voice_card=str(getattr(persona, "character_voice_card", "") or ""),
             base_template=getattr(persona, "base_template", {}) or {},
             style_examples=list(getattr(persona, "style_examples", []) or []),
-            current_affinity_level=affinity_level,
-            current_emotion=current_emotion,
             display_keywords=list(getattr(persona, "display_keywords", []) or []),
         )
         or ""
     ).strip()
-    return system._truncate_for_prompt(prompt, 1400)
+    return system._truncate_for_prompt(prompt, 1800)
 
 
-def _split_evidence_blocks(persona_context: str) -> list[str]:
-    text = str(persona_context or "").strip()
-    if not text:
-        return []
-    return [block.strip() for block in re.split(r"\n\s*\n", text) if block.strip()] or [text]
-
-
-def _select_evidence_prompt(persona_context: str, response_mode: str) -> str:
-    blocks = _split_evidence_blocks(persona_context)
-    if not blocks:
-        return ""
-    if response_mode == "story":
-        return blocks[0]
-    if response_mode in {"persona_fact", "self_intro"}:
-        return "\n\n".join(blocks[:3])
-    return "\n\n".join(blocks[:4])
-
-
-def recent_assistant_context(system) -> str:
-    recent_messages = system._recent_assistant_messages(limit=3)
-    if not recent_messages:
-        return "None"
-    summaries: list[str] = []
-    for text in recent_messages:
-        lines = [line.strip() for line in str(text).splitlines() if line.strip()]
-        compact = " / ".join(lines[:3]) if lines else str(text).strip()
-        summaries.append("- " + system._truncate_for_prompt(compact, 120))
-    return system._truncate_for_prompt("\n".join(summaries), 360)
-
-
-def build_format_data(system, content, thought_data, memories, persona_context, tool_context, grounding=None) -> dict:
-    now = datetime.now()
-    beliefs = system.get_beliefs()
-    belief_str = "\n".join(f"- {belief}" for belief in beliefs) if beliefs else "None"
-    memories_str = format_memories_to_string(memories, "你暂时还没有关于这位用户的稳定记忆。")
-    memories_str = system._truncate_for_prompt(memories_str, 420)
-
-    grounding = grounding or {}
-    response_mode = str(grounding.get("response_mode", "casual") or "casual")
-    persona_focus = str(grounding.get("persona_focus", "general") or "general")
-    response_contract = str(grounding.get("response_contract", "") or "").strip()
-    persona_focus_contract = str(grounding.get("persona_focus_contract", "") or "").strip()
-
-    style_prompt = system._truncate_for_prompt(build_persona_injection_prompt(system, thought_data), 2200)
-    identity_prompt = system._truncate_for_prompt(build_identity_reference(system), 700)
-    evidence_prompt = system._truncate_for_prompt(_select_evidence_prompt(persona_context, response_mode), 2000)
-    tool_context = system._truncate_for_prompt(tool_context, 900)
-
-    user_emotions = thought_data.get("possible_user_emotions", []) or []
-    if user_emotions:
-        user_emotion_str = "用户可能正在感受：" + "、".join(user_emotions)
-    else:
-        user_emotion_str = "用户没有表现出非常强烈的显性情绪。"
-
-    return {
-        "name": system.config.name,
-        "personality_summary": system.personality_system.get_summary(),
-        "style_prompt": style_prompt,
-        "identity_prompt": identity_prompt or "None",
-        "evidence_prompt": evidence_prompt or "None",
-        "tool_context": tool_context or "None",
-        "response_mode": response_mode,
-        "response_contract": response_contract or "自然回答，但不要编造没有证据的事实。",
-        "persona_focus": persona_focus or "general",
-        "persona_focus_contract": persona_focus_contract or "None",
-        "recent_assistant_context": recent_assistant_context(system),
-        "story_grounding_required": "yes" if response_mode == "story" else "no",
-        "story_answer_mode": "direct_retelling" if response_mode == "story" else "normal",
-        "persona_grounding_required": "yes" if response_mode in {"self_intro", "persona_fact", "story"} else "no",
-        "external_grounding_required": "yes" if response_mode == "external" else "no",
-        "tool_evidence_available": "yes" if system._has_tool_evidence(tool_context) else "no",
-        "user_input": content,
-        "emotion": thought_data.get("emotion", "平静"),
-        "relationship_state": relation_state_summary(system),
-        "memories": memories_str,
-        "curr_date": format_date(now),
-        "curr_time": format_time(now),
-        "user_emotion_str": user_emotion_str,
-        "beliefs": belief_str,
-        "mood_long_desc": system.emotion_system.get_mood_long_description(),
-        "mood_prompt": system.emotion_system.get_mood_prompt(),
-        "last_interaction": time_since_last_message_string(system.last_message),
-        "tone_register": thought_data.get("tone_register", "grounded-natural"),
-        "evidence_status": thought_data.get("evidence_status", "evidence-backed"),
-    }
+def build_persona_dynamic_prompt(system, thought_data: dict) -> str:
+    current_emotion = str(thought_data.get("emotion", "平静") or "平静").strip() or "平静"
+    affinity_level = _affinity_level_for_prompt(system)
+    prompt = str(
+        build_base_template_dynamic_prompt(
+            current_affinity_level=affinity_level,
+            current_emotion=current_emotion,
+        )
+        or ""
+    ).strip()
+    return system._truncate_for_prompt(prompt, 260)
 
 
 def estimate_pending_signal(system, user_input, recent_conversation: str = "") -> EmotionSignal:

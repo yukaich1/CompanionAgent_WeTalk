@@ -30,6 +30,7 @@ class TurnTrace:
     selected_context_view: dict = field(default_factory=dict)
     persistence_boundary: dict = field(default_factory=dict)
     memory_commit: dict = field(default_factory=dict)
+    prompt_cache: dict = field(default_factory=dict)
     planner: dict = field(default_factory=dict)
     fallback_reason: str = ""
     final_response: str = ""
@@ -61,6 +62,7 @@ class TurnTrace:
             "selected_context_view": dict(self.selected_context_view),
             "persistence_boundary": dict(self.persistence_boundary),
             "memory_commit": dict(self.memory_commit),
+            "prompt_cache": dict(self.prompt_cache),
             "planner": dict(self.planner),
             "fallback_reason": self.fallback_reason,
             "final_response": self.final_response,

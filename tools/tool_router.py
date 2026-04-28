@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from tools.intent_extractor import IntentExtractionResult
+from tools.safety import ToolSafetyReviewer
 
 
 @dataclass
@@ -22,22 +23,45 @@ class ToolExecutionReport:
     tool_type: str = ""
     inject_policy: str = "none"
     persist_policy: str = "ignore"
+    safety_decision: str = "allow"
+    safety_reason: str = ""
 
 
 class ToolRouter:
     def __init__(self, registry):
         self.registry = registry
+        self.safety_reviewer = ToolSafetyReviewer()
 
     def execute_intent(self, intent_result: IntentExtractionResult, persona_name: str = "") -> ToolExecutionReport:
         del persona_name
         if not intent_result.needs_tool or not intent_result.tool_name:
             return ToolExecutionReport()
 
+        safety = self._review_request(intent_result)
+        if safety.decision == "hard_reject":
+            return ToolExecutionReport(
+                follow_up_message="这类外部查询可能涉及敏感或不安全内容，我先不替你执行。",
+                safety_decision=safety.decision,
+                safety_reason=safety.reason,
+            )
+        if safety.decision == "soft_reject":
+            return ToolExecutionReport(
+                follow_up_message="我可以帮你查，但这个请求目前太宽或带有可疑指令，先把查询目标说得更具体一点。",
+                safety_decision=safety.decision,
+                safety_reason=safety.reason,
+            )
+
         if intent_result.tool_name == "weather":
-            return self._execute_weather(intent_result)
+            report = self._execute_weather(intent_result)
+            report.safety_decision = safety.decision
+            report.safety_reason = safety.reason
+            return report
         if intent_result.tool_name == "web_search":
-            return self._execute_web_search(intent_result)
-        return ToolExecutionReport()
+            report = self._execute_web_search(intent_result)
+            report.safety_decision = safety.decision
+            report.safety_reason = safety.reason
+            return report
+        return ToolExecutionReport(safety_decision=safety.decision, safety_reason=safety.reason)
 
     def _execute_weather(self, intent_result: IntentExtractionResult) -> ToolExecutionReport:
         params = intent_result.tool_params or {}
@@ -148,3 +172,12 @@ class ToolRouter:
             results=[{"tool": call.name, "reason": call.reason, "result": result, "ok": False}],
             context="None",
         )
+
+    def _review_request(self, intent_result: IntentExtractionResult):
+        params = intent_result.tool_params or {}
+        query = ""
+        if str(intent_result.tool_name or "") == "weather":
+            query = str(params.get("location") or intent_result.extracted_topic or "").strip()
+        elif str(intent_result.tool_name or "") == "web_search":
+            query = str(params.get("search_query") or intent_result.extracted_topic or "").strip()
+        return self.safety_reviewer.review(tool_name=str(intent_result.tool_name or "tool"), query=query)

@@ -106,6 +106,7 @@ class TurnEngine:
         trace.selected_context_view = dict((self.system.last_debug_info or {}).get("selectedContextView", {}) or {})
         trace.persistence_boundary = dict((self.system.last_debug_info or {}).get("persistenceBoundary", {}) or {})
         trace.memory_commit = dict((self.system.last_debug_info or {}).get("memoryCommit", {}) or {})
+        trace.prompt_cache = dict(((self.system.last_debug_info or {}).get("responsePlan", {}) or {}).get("promptCache", {}) or {})
         trace.planner = {
             "surface_intent": str((artifacts.thought_data or {}).get("surface_intent", "") or ""),
             "latent_need": str((artifacts.thought_data or {}).get("latent_need", "") or ""),
@@ -397,6 +398,8 @@ class TurnEngine:
             "tool_type": str(getattr(tool_report, "tool_type", "") or ""),
             "inject_policy": str(getattr(tool_report, "inject_policy", "none") or "none"),
             "persist_policy": str(getattr(tool_report, "persist_policy", "ignore") or "ignore"),
+            "safety_decision": str(getattr(tool_report, "safety_decision", "allow") or "allow"),
+            "safety_reason": str(getattr(tool_report, "safety_reason", "") or ""),
         }
 
     def _relation_snapshot(self) -> dict:

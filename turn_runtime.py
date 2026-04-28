@@ -11,6 +11,9 @@ class DynamicStateView:
     user_emotion_hint: str
     recent_dialogue: str
     memory_snapshot: str
+    hot_memory_index: str = ""
+    warm_memory_context: str = ""
+    cold_memory_hint: str = ""
     session_context: str = ""
 
 

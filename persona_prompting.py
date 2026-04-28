@@ -753,17 +753,14 @@ L. HUMOR — 幽默机制（选填）
 #  演员 Prompt —— 每轮注入（注入阶段）
 # ══════════════════════════════════════════════════════════════════════
 
-def build_base_template_injection_prompt(
+def _base_template_static_prompt(
     *,
     character_name: str,
     character_voice_card: str,
     base_template: dict,
     style_examples: list[dict],
-    current_affinity_level: str,
-    current_emotion: str,
     display_keywords: list[str] | None = None,
 ) -> str:
-    # 无素材时由调用方在上游拦截，此处直接走正常分支
     keywords = [str(item).strip() for item in list(display_keywords or []) if str(item).strip()]
     keyword_block     = "、".join(keywords[:15]) if keywords else "（无）"
     voice_card_block  = _clean_line(character_voice_card, 120) or "（无）"
@@ -771,7 +768,6 @@ def build_base_template_injection_prompt(
     rules_block       = _rules_block(base_template)
     tendency_block    = _background_tendency_block(base_template)
     examples_block    = _style_examples_block(style_examples, limit=5)
-    affinity_hint     = _affinity_hint(current_affinity_level)
 
     return f"""
 你现在要扮演 {character_name}。
@@ -799,11 +795,6 @@ def build_base_template_injection_prompt(
 
 {tendency_block}
 
-━━ 当前互动背景 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-关系阶段：{affinity_hint}
-当前情绪：{current_emotion}
-这两项只影响语气分寸和话量，不改写角色底色，不替代上方规则。
-
 ━━ 角色标签（仅供理解人物侧面，不能原样复述给用户） ━━━━━━
 {keyword_block}
 
@@ -821,4 +812,31 @@ def build_base_template_injection_prompt(
 4. 普通问候不借机塞身份标签，自我介绍先直接回答"我是谁"再补少量细节。
 5. 不为了"像角色"而机械重复任何一句招牌句。
 6. 不要把角色感演成固定套路：不要每轮都补一个刻意收尾、嘴硬回撤或否认式反转。
+""".strip()
+
+
+def build_base_template_static_prompt(
+    *,
+    character_name: str,
+    character_voice_card: str,
+    base_template: dict,
+    style_examples: list[dict],
+    display_keywords: list[str] | None = None,
+) -> str:
+    return _base_template_static_prompt(
+        character_name=character_name,
+        character_voice_card=character_voice_card,
+        base_template=base_template,
+        style_examples=style_examples,
+        display_keywords=display_keywords,
+    )
+
+
+def build_base_template_dynamic_prompt(*, current_affinity_level: str, current_emotion: str) -> str:
+    affinity_hint = _affinity_hint(current_affinity_level)
+    return f"""
+━━ 当前互动背景 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+关系阶段：{affinity_hint}
+当前情绪：{current_emotion}
+这两项只影响语气分寸和话量，不改写角色底色，不替代长期规则。
 """.strip()
